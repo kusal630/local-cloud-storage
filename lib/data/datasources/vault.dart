@@ -1,8 +1,7 @@
 import 'dart:io';
 
-import 'package:disk_space/disk_space.dart';
-import 'package:image/image.dart' as img;
-import 'package:mime/mime.dart' as mime;
+import '../../core/utils/disk_space_compat.dart';
+import 'package:image/image.dart' as img;import 'package:mime/mime.dart' as mime;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
@@ -221,10 +220,10 @@ class Vault {
     int total = 0;
     int free = 0;
     try {
-      final totalValue = await DiskSpace.getTotalDiskSpace;
-      final freeValue = await DiskSpace.getFreeDiskSpace;
-      total = (totalValue ?? 0).round();
-      free = (freeValue ?? 0).round();
+      final totalValue = await DiskSpaceCompat.getTotalDiskSpace();
+      final freeValue = await DiskSpaceCompat.getFreeDiskSpace();
+      total = totalValue ?? 0;
+      free = freeValue ?? 0;
     } catch (e) {
       logError('storageStatus: could not query disk space', e);
       throw StorageException('Storage is unavailable.', cause: e);

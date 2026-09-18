@@ -4,6 +4,12 @@
 
 A cross-platform local cloud storage application that turns local storage (external SSD, pen drive, SD card, or folder) into a private local cloud. No internet access required — all data stays on your devices.
 
+## 📱 Download
+
+- **Android APK (v1.0.0)**: [`dist/localvault-v1.0.0.apk`](dist/localvault-v1.0.0.apk)
+  (82.5 MB, release build, SHA-256 `258ac83a…c98bb`)
+- Install: copy to your phone → open the file → allow “Install unknown apps” → install.
+
 ## ✨ What's new (Best-in-World wave)
 
 - **Premium Material 3 design system** — deep-teal identity, expressive cards/dialogs/snackbars/chips, polished dark mode, responsive layouts (phone → tablet → desktop).

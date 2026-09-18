@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "dev.localvault.localvault"
-    compileSdk = flutter.compileSdkVersion
+    // 37: required by flutter_secure_storage's AAR metadata (platform
+    // symlinked from android-37.0 in this environment).
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -57,7 +57,6 @@ dependencies:
   intl: ^0.20.3
   equatable: ^2.1.0
   desktop_drop: ^0.8.0
-  disk_space: ^0.2.1
   shelf_multipart: ^2.0.1
 
 dev_dependencies:
