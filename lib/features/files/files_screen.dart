@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'dart:async' as async;
+
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +26,94 @@ class _Crumb {
   const _Crumb(this.id, this.name);
 }
 
+/// Grid thumbnail with in-memory cache and icon fallback.
+class _GridThumb extends ConsumerStatefulWidget {
+  final String fileId;
+  const _GridThumb({required this.fileId});
+  @override
+  ConsumerState<_GridThumb> createState() => _GridThumbState();
+}
+
+class _GridThumbState extends ConsumerState<_GridThumb> {
+  static final Map<String, Uint8List> _cache = {};
+  Uint8List? _bytes;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final hit = _cache[widget.fileId];
+    if (hit != null) {
+      _bytes = hit;
+    } else {
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    try {
+      final bytes =
+          await ref.read(fileServiceProvider).thumbBytes(widget.fileId);
+      if (!mounted) return;
+      final data = Uint8List.fromList(bytes);
+      _cache[widget.fileId] = data;
+      // Bound the cache.
+      if (_cache.length > 200) _cache.remove(_cache.keys.first);
+      setState(() => _bytes = data);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _failed = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_bytes != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.memory(_bytes!,
+            width: 52, height: 52, fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) {
+          if (!_failed) setState(() => _failed = true);
+          return const SizedBox.shrink();
+        }),
+      );
+    }
+    return const SizedBox(
+      width: 52,
+      height: 52,
+      child: Center(
+          child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2))),
+    );
+  }
+}
+
+/// Live-sync status: green when the host revision was checked recently.
+class _SyncPill extends StatelessWidget {
+  const _SyncPill({required this.syncedAt});
+  final DateTime? syncedAt;
+  @override
+  Widget build(BuildContext context) {
+    final fresh = syncedAt != null &&
+        DateTime.now().difference(syncedAt!) < const Duration(seconds: 30);
+    return StatusPill(
+      label: syncedAt == null
+          ? 'SYNC…'
+          : fresh
+              ? 'SYNCED'
+              : 'STALE',
+      color: syncedAt == null
+          ? Theme.of(context).colorScheme.outline
+          : fresh
+              ? const Color(0xFF43A047)
+              : const Color(0xFFFB8C00),
+    );
+  }
+}
+
 class _FilesScreenState extends ConsumerState<FilesScreen> {
   bool _isGridView = false;
   bool _loading = false;
@@ -37,6 +129,12 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   final List<_Crumb> _crumbs = [const _Crumb('root', 'Home')];
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode();
+  async.Timer? _syncTimer;
+  async.Timer? _searchTimer;
+  int? _syncVersion;
+  DateTime? _syncedAt;
+  List<VaultFile>? _serverResults;
+  bool _searching = false;
 
   @override
   void initState() {
@@ -45,6 +143,10 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     _load();
     // Auto-refresh when transfers finish while browsing.
     ref.read(transferManagerProvider).addListener(_onTransfersChanged);
+    // Live sync: poll the host revision; reload when it moves.
+    _syncTimer =
+        async.Timer.periodic(const Duration(seconds: 10), (_) => _pollSync());
+    async.unawaited(_pollSync());
   }
 
   int _doneCount = 0;
@@ -63,11 +165,33 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     }
   }
 
+  Future<void> _pollSync() async {
+    try {
+      final version = await ref.read(fileServiceProvider).syncVersion();
+      if (!mounted) return;
+      if (_syncVersion == null) {
+        setState(() {
+          _syncVersion = version;
+          _syncedAt = DateTime.now();
+        });
+      } else if (version != _syncVersion) {
+        setState(() => _syncVersion = version);
+        await _load();
+        if (!mounted) return;
+        setState(() => _syncedAt = DateTime.now());
+      }
+    } catch (_) {
+      // Host unreachable — stay on cached data.
+    }
+  }
+
   @override
   void dispose() {
     try {
       ref.read(transferManagerProvider).removeListener(_onTransfersChanged);
     } catch (_) {}
+    _syncTimer?.cancel();
+    _searchTimer?.cancel();
     _searchController.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -131,6 +255,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     setState(() {
       _crumbs.add(_Crumb(folder.id, folder.name));
       _query = '';
+      _serverResults = null;
       _searchController.clear();
     });
     _load();
@@ -142,6 +267,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     setState(() {
       _crumbs.removeRange(index + 1, _crumbs.length);
       _query = '';
+      _serverResults = null;
       _searchController.clear();
     });
     _load();
@@ -168,8 +294,35 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     return sorted;
   }
 
-  List<VaultFile> get _visible {
-    final q = _query.trim().toLowerCase();
+  void _onQueryChanged(String value) {
+    setState(() {
+      _query = value;
+      _serverResults = null;
+      _searching = false;
+    });
+    _searchTimer?.cancel();
+    final q = value.trim();
+    if (q.length < 2) return;
+    _searchTimer = async.Timer(const Duration(milliseconds: 400), () async {
+      if (!mounted) return;
+      setState(() => _searching = true);
+      try {
+        final results = await ref.read(fileServiceProvider).search(q);
+        if (!mounted) return;
+        // Drop stale responses.
+        if (_searchController.text.trim() != q) return;
+        setState(() {
+          _serverResults = results;
+          _searching = false;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _searching = false);
+      }
+    });
+  }
+
+  List<VaultFile> get _visible {    final q = _query.trim().toLowerCase();
     // Starred/Recent are server-side collections; only the query applies.
     if (_typeFilter == 'starred' || _typeFilter == 'recent') {
       if (q.isEmpty) return _items;
@@ -304,6 +457,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                   _download(file);
                 },
               ),
+            if (!file.isFolder)
+              ListTile(
+                leading: const Icon(Icons.link_rounded),
+                title: const Text('Share link'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _shareFile(file);
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.drive_file_move_rounded),
               title: const Text('Move'),
@@ -358,8 +520,109 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     }
   }
 
-  Future<void> _toggleFavorite(VaultFile file) async {
+  Future<void> _shareFile(VaultFile file) async {
+    final passwordController = TextEditingController();
+    var expiryHours = 24.0;
+    final create = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialog) => AlertDialog(
+          title: Text('Share "${file.name}"'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Anyone with the link can download this file.'),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<double>(
+                initialValue: expiryHours,
+                decoration:
+                    const InputDecoration(labelText: 'Link expires'),
+                items: const [
+                  DropdownMenuItem(value: 1.0, child: Text('After 1 hour')),
+                  DropdownMenuItem(value: 24.0, child: Text('After 1 day')),
+                  DropdownMenuItem(
+                      value: 168.0, child: Text('After 7 days')),
+                  DropdownMenuItem(
+                      value: 720.0, child: Text('After 30 days')),
+                ],
+                onChanged: (v) =>
+                    setDialog(() => expiryHours = v ?? 24.0),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: passwordController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Password (optional)',
+                  hintText: 'Min 4 characters',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Create link')),
+          ],
+        ),
+      ),
+    );
+    if (create != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
     try {
+      final result = await ref.read(fileServiceProvider).createShare(
+            fileId: file.id,
+            expiresInHours: expiryHours,
+            password: passwordController.text.trim().isEmpty
+                ? null
+                : passwordController.text.trim(),
+          );
+      final base = ref.read(apiClientProvider).serverUrl ?? '';
+      final link = '$base/s/${result.token}';
+      if (!mounted) return;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Share link ready'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(link),
+              const SizedBox(height: 8),
+              Text(
+                'Manage or revoke it any time in Settings → Shared links.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Done')),
+            FilledButton.icon(
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy'),
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: link));
+                Navigator.pop(ctx);
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Link copied')),
+                );
+              },
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Share failed: $e')));
+    }
+  }
+
+  Future<void> _toggleFavorite(VaultFile file) async {    try {
       await ref.read(fileServiceProvider).setFavorite(file.id, !file.isFavorite);
       _load();
     } catch (e) {
@@ -428,6 +691,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           name: file.name,
           destDir: dir,
           totalBytes: file.size,
+          checksum: file.checksum,
         );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -711,6 +975,8 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                     i == _crumbs.length - 1 ? null : () => _navigateToCrumb(i),
               ),
             ],
+            const SizedBox(width: 8),
+            _SyncPill(syncedAt: _syncedAt),
           ],
         ),
       );
@@ -720,20 +986,30 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         child: SearchBar(
           controller: _searchController,
           focusNode: _searchFocus,
-          hintText: 'Search in this folder…  ( / )',
+          hintText: 'Search this folder or the vault…  ( / )',
           leading: const Icon(Icons.search_rounded),
-          trailing: _query.isEmpty
+          trailing: _query.isEmpty && !_searching
               ? null
               : [
-                  IconButton(
-                    icon: const Icon(Icons.clear_rounded),
-                    onPressed: () {
-                      _searchController.clear();
-                      setState(() => _query = '');
-                    },
-                  )
+                  if (_searching)
+                    const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child:
+                              CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                  else
+                    IconButton(
+                      icon: const Icon(Icons.clear_rounded),
+                      onPressed: () {
+                        _searchController.clear();
+                        _onQueryChanged('');
+                      },
+                    )
                 ],
-          onChanged: (v) => setState(() => _query = v),
+          onChanged: _onQueryChanged,
         ),
       );
 
@@ -770,6 +1046,44 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   }
 
   Widget _buildBody(List<VaultFile> visible) {
+    // Vault-wide server results take over while searching.
+    final searching = _query.trim().length >= 2;
+    if (searching && _serverResults != null) {
+      final results = _serverResults!;
+      if (results.isEmpty) {
+        return EmptyState(
+          icon: Icons.search_off_rounded,
+          title: 'No matches in vault',
+          subtitle: 'Try a different search.',
+          action: OutlinedButton(
+            onPressed: () {
+              _searchController.clear();
+              _onQueryChanged('');
+            },
+            child: const Text('Clear search'),
+          ),
+        );
+      }
+      return Column(
+        children: [
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
+              children: [
+                Icon(Icons.travel_explore_rounded,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 6),
+                Text('Across vault (${results.length})',
+                    style: Theme.of(context).textTheme.labelMedium),
+              ],
+            ),
+          ),
+          Expanded(child: _buildList(results)),
+        ],
+      );
+    }
     if (_loading) return const SkeletonList();
     if (_error != null) return ErrorState(message: _error!, onRetry: _load);
     if (_items.isEmpty) {
@@ -905,8 +1219,13 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      VaultFileIcon(
-                          name: file.name, isFolder: file.isFolder, size: 52),
+                      if (file.hasThumb && !file.isFolder)
+                        _GridThumb(fileId: file.id)
+                      else
+                        VaultFileIcon(
+                            name: file.name,
+                            isFolder: file.isFolder,
+                            size: 52),
                       const SizedBox(height: 10),
                       Text(
                         file.name,

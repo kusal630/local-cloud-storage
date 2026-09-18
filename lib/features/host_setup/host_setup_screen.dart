@@ -7,7 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:localvault/core/utils/file_kinds.dart';
 import 'package:localvault/data/datasources/vault.dart';
-import 'package:localvault/server/server.dart';
+import 'package:localvault/server/host_runner.dart';
 import 'package:localvault/core/logging/app_logger.dart' as log;
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/widgets/common.dart';
@@ -94,19 +94,21 @@ class HostSetupNotifier extends StateNotifier<HostSetupState> {
     state = state.copyWith(loading: true, error: null);
     try {
       final storageRoot = Directory(path);
-      final vault = await Vault.create(storageRoot);
-      await vault.completeSetup(
+      // Create + set up, then hand over: the runner owns the serving
+      // isolate and the dashboard owns a UI-isolate vault handle.
+      final created = await Vault.create(storageRoot);
+      await created.completeSetup(
         password: state.password,
         deviceName: state.deviceName,
         username: state.username,
       );
-      final server = LocalVaultServer(vault: vault);
-      final port = await server.start();
+      created.close();
+      final runner = await HostRunner.start(storagePath: path);
       ref.read(hostUrlProvider.notifier).state =
-          (await server.lanUrl()) ?? 'http://127.0.0.1:$port';
+          (await runner.lanUrl()) ?? '${runner.scheme}://127.0.0.1:${runner.port}';
       ref.read(hostStateProvider.notifier).state = HostDashboardData(
-        server: server,
-        vault: vault,
+        server: runner,
+        vault: runner.vault,
       );
     } catch (e, st) {
       log.logError('Host setup failed', e, st);

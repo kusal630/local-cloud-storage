@@ -1,177 +1,149 @@
 # LocalVault — Your Private Local Cloud
 
-> LAN-only • Offline-first • No accounts • No subscriptions • Your drive, your rules.
+> Turn any disk into your own cloud. No accounts, no subscriptions, no internet
+> required. Your files never leave your devices.
 
-A cross-platform local cloud storage application that turns local storage (external SSD, pen drive, SD card, or folder) into a private local cloud. No internet access required — all data stays on your devices.
+LocalVault makes a folder, SSD, pen drive, SD card — or a whole Raspberry Pi —
+act like Dropbox, except the "cloud" is hardware you own. One device hosts
+(**Storage Node**); every other device connects as a **Client** to browse,
+upload, download, share, and back up.
 
 ## 📱 Download
 
-- **Android APK (v1.1.0)**: [GitHub Releases → LocalVault v1.1.0](https://github.com/kusal630/local-cloud-storage/releases/tag/v1.1.0)
-  (`localvault-v1.1.0.apk`, 82.9 MB, SHA-256 `ab211fd3…18e0`; also mirrored at [`dist/localvault-v1.1.0.apk`](dist/localvault-v1.1.0.apk))
-- Install: download → open the file → allow “Install unknown apps” → install.
+- **Android**: [Releases → latest APK](https://github.com/kusal630/local-cloud-storage/releases)
+  (open on the phone → allow “Install unknown apps” → install)
+- **Windows / Linux / macOS**: build from source (5 minutes, see below)
 
-## ☁️ Your phone as an always-on cloud (v1.1.0)
+## What you can do with it
 
-1. **Host on Android**: Welcome → Start Storage Node. Pick a folder (defaults to
-   the app's external storage — writable without special permissions, works with
-   SD-card adopted storage). The node keeps running in the background via a
-   foreground service + wake lock, so the cloud stays reachable while the phone
-   is on.
-2. **Username + password**: set them during host setup. Anyone reaching the node
-   logs in with `username + password` (or pairs with a QR + 6-digit code).
-3. **Access from anywhere**: any network route to the phone works — same Wi-Fi,
-   phone hotspot, or a VPN such as Tailscale/ZeroTier on both devices. For true
-   anywhere-access without a VPN, port-forward the server port to the phone on
-   your router. See Host Dashboard → Remote Access.
-4. **Auto Backup**: on the client, Settings → Auto Backup → watch folders
-   (e.g. DCIM/Camera) → Backup now. New photos/files upload to
-   `Auto Backup/<device>`; already-uploaded content is skipped by checksum,
-   like a normal cloud backup.
-
-## ✨ What's new (Best-in-World wave)
-
-- **Premium Material 3 design system** — deep-teal identity, expressive cards/dialogs/snackbars/chips, polished dark mode, responsive layouts (phone → tablet → desktop).
-- **Brand-new Welcome** — hero logo, value props (fast LAN, QR pairing, you-hold-the-keys), trust footer.
-- **Files 2.0** — breadcrumbs with back navigation, per-type file icons, `size • date` subtitles, inline search + type filter chips (All/Folders/Images/Docs/Video), sort indicator + persistence, responsive grid (2→6 columns), selection mode + bulk trash, skeleton loading, drag & drop with overlay.
-- **Reliable setup & pairing** — host setup keeps typed input (no cursor jumps), password visibility + strength meter, 2-step layout; client connect validates URL/code, remembers last server, robust QR parsing (`localvault://host:port`), clear LAN help + error cards.
-- **Honest dashboards** — host dashboard split into Connect/Devices/Storage cards with status pills, fixed QR payload, formatted dates, visual storage meters; transfers show Up/Download labels + % + rounded bars; storage reuses one meter widget; preview downloads via folder picker (no `/tmp` hack), formatted metadata + copyable checksum.
-
-## Feature matrix
-
-| Area | Status |
+| Use | How |
 |---|---|
-| Host node (desktop, :8484, QR + 6-digit code) | ✅ |
-| Client browse/upload/download/rename/move/trash | ✅ |
-| Chunked upload + Range resume + checksum | ✅ |
-| Search + sort + grid/list + filters | ✅ |
-| Bulk select + trash | ✅ |
-| Dark mode + responsive | ✅ |
-| LAN auto-discovery (UDP beacon + Nearby list) | ✅ |
-| Starred + Recent | ✅ |
-| Replace-upload with version history + restore | ✅ |
-| Storage breakdown by type | ✅ |
-| Host activity log | ✅ |
-| Trash retention auto-purge + vault quota | ✅ |
-| Persistent transfers (survive restart) + speed/ETA | ✅ |
-| App PIN lock | ✅ |
-| HTTPS with your own cert (LAN TLS) | ✅ |
-| Desktop shortcuts (Ctrl+R, Ctrl+Shift+N, /) | ✅ |
+| **Family cloud on an old phone** | Host on the always-on phone, everyone connects with username + password |
+| **Raspberry Pi home server** | `pi/install.sh` builds an always-on node on your Pi (see below) |
+| **Camera backup** | Client → Settings → Auto Backup watches folders and uploads new photos to `Auto Backup/<device>`, skipping what is already there |
+| **Share a file** | Long-press → Share link → expiring URL with optional password (`https://…/s/<token>`) |
+| **Version safety** | Re-uploading a file archives the old content; restore any version from Preview |
+| **Scripts & automation** | Host Dashboard → New API token gives a long-lived token for `curl`/cron jobs |
+| **Offline media** | Host on a laptop on a trip; phones stream/download over the hotspot, no internet needed |
 
-## Wave 2 notes
+## Quick start (2 minutes)
 
-- **Nearby nodes**: the host broadcasts a `localvault-v1` UDP beacon on port
-  8485 every 2 s. Client → Connect shows discovered nodes; tap to fill the URL.
-- **Versions**: uploading a file with an existing name offers Replace — the old
-  content is archived (keeps last 20) and restorable from Preview → Version history.
-- **Retention/quota**: Host Dashboard → Host Settings. Retention auto-purges trash
-  on server start (0 = forever); quota rejects oversized uploads with 409.
-- **Transfers**: queue persists across restarts (interrupted tasks become
-  retryable); live speed + ETA shown.
-- **PIN**: Settings → App PIN (4–8 digits, SHA-256 stored). Asked at startup.
-- **HTTPS**: generate a LAN cert once, then Host Settings → TLS paths:
-  ```bash
-  openssl req -x509 -newkey rsa:2048 -keyout lan.key -out lan.crt \
-    -days 825 -nodes -subj "/CN=$(hostname)" \
-    -addext "subjectAltName=IP:<HOST_LAN_IP>,DNS:$(hostname)"
-  ```
-  Restart the node to serve `https://`; on the client enable
-  “Trust self-signed HTTPS” when connecting. Plain HTTP stays the default.
+**1. Start a Storage Node** (phone, PC, or Pi)
+- Welcome → **Start Storage Node** → pick the folder/drive to use as cloud
+- Choose a **username + password** → Start
+- On Android the node keeps running in the background (foreground service)
 
-## Architecture
+**2. Connect**
+- On another device: **Connect to Storage Node**
+- Either scan the QR (certificate is pinned automatically) or enter the URL +
+  pairing code — or log in with username + password
+- First manual HTTPS connection asks you to confirm the TLS fingerprint —
+  compare it with Host Dashboard → Pairing → TLS fingerprint
 
-```
-lib/
-  app/           – Theme, router, providers, root widget
-  core/          – Constants, errors, logging, utilities
-  data/          – SQLite database, models, repositories
-  server/        – Host Mode shelf HTTP server
-  client/        – Client Mode Dio HTTP client
-  features/      – UI screens (welcome, host, client, files, etc.)
-  widgets/       – Shared UI components
-```
+**3. Use it like a cloud**
+- Files: breadcrumbs, search across the whole vault, Starred/Recent filters,
+  grid/list, sort, bulk select, drag & drop (desktop), shortcuts
+  (`Ctrl+R` refresh, `Ctrl+Shift+N` folder, `/` search)
+- Preview images, read text/code notes, restore old versions
+- Transfers survive app restarts, show speed/ETA, and downloads are
+  checksum-verified
 
-### Key Technologies
-- **Flutter** – Cross-platform UI framework
-- **Riverpod** – State management
-- **go_router** – Declarative routing
-- **shelf** – HTTP server (Host Mode)
-- **Dio** – HTTP client (Client Mode)
-- **SQLite** – Local metadata storage
-- **Argon2id** – Password hashing (pure Dart via `cryptography` package)
-- **Material 3** – Design system
+## Run it on every platform
 
-## How to Run
+| Platform | Host | Client | Notes |
+|---|---|---|---|
+| **Android** | ✅ (foreground service, always-on) | ✅ | Storage defaults to app external dir (SD-card friendly) |
+| **Windows** | ✅ | ✅ | `flutter build windows --release` → `build\windows\x64\runner\Release\` |
+| **Linux** | ✅ | ✅ | Needs `clang cmake ninja-build pkg-config libgtk-3-dev`; `flutter build linux --release` |
+| **macOS** | ✅ | ✅ | Xcode 14+; `flutter build macos --release` |
+| **Raspberry Pi** | ✅ (headless via `pi/install.sh`) | — | Pi OS 64-bit, see below |
 
-### Prerequisites
-- Flutter 3.47+ / Dart 3.13+
-- For Android: Android SDK 36, Build Tools 28.0.3
-- For Linux desktop: clang, cmake, ninja, GTK 3.0 dev, pkg-config
-- For Windows: Visual Studio with C++ desktop workload
-- For macOS: Xcode 14+
+Disk space, thumbnails, and drag & drop work per-platform; where a platform
+API is missing the UI degrades to a clear message instead of crashing.
 
-### Android
+### Raspberry Pi home server
+
 ```bash
-flutter build apk --release
-# or
-flutter build appbundle --release
+git clone https://github.com/kusal630/local-cloud-storage.git
+cd local-cloud-storage
+STORAGE=/mnt/cloud PASS='a-strong-password' ./pi/install.sh
+# optional: USERNAME=owner NAME='Pi Cloud' PORT=8484
 ```
-Install the APK on your Android device.
 
-### Linux
+This installs deps + Flutter, builds the ARM64 release with your storage baked
+in, and enables a systemd service (`localvault`) that starts on boot through
+Xvfb (no monitor needed). Then `hostname -I` for the IP and connect from your
+phone with `https://<pi-ip>:8484`.
+
+## Access from anywhere
+
+Any network route to the node works: same Wi-Fi, phone hotspot, or a VPN such
+as Tailscale/ZeroTier on both devices (closest to real-cloud UX). Without a
+VPN, port-forward the server port to the node on your router. Mobile networks
+use carrier NAT, so inbound connections from the raw internet need that
+forward — the app never pretends otherwise.
+
+## Security model
+
+- **Encrypted by default**: every node serves **HTTPS** with a per-vault
+  self-signed certificate (generated on first start, RSA-2048, 825 days).
+  Clients **pin the certificate fingerprint** (QR or verify-on-first-use) —
+  LAN eavesdroppers and impersonators get nothing. Plain HTTP exists only if
+  you deliberately clear both TLS paths in Host Settings.
+- **Passwords**: Argon2id (64 MiB, 3 iterations); only hashes stored.
+- **Tokens**: 256-bit `Random.secure`, only SHA-256 hashes in SQLite;
+  15-minute access / 30-day refresh with rotation; expiry enforced on every
+  request; rate-limited pairing + login; the host device entry can't be
+  revoked out from under you.
+- **Storage**: vault dir locked to owner-only permissions (`0700`) where the
+  OS supports it; file names sanitized (no path traversal); uploads verified
+  by SHA-256 before they land; downloads re-verified on the client.
+- **Shares**: unguessable 256-bit tokens (hashes only in DB), optional expiry
+  and Argon2id passwords, ticketed content URLs, download counting, one-tap
+  revoke. **API tokens**: long-lived, shown once, revocable like devices.
+- **App**: optional PIN lock; tokens in the platform keystore.
+
+## How it stores things
+
+- `<storage>/.localvault/` holds `db.sqlite` (metadata, users, versions,
+  audit, shares) plus content-addressed blobs (`blobs/…`), thumbnails, and
+  the TLS identity (`tls/`). Rename/move/version operations touch only the
+  database — bytes are deduplicated by checksum + size.
+- Trash with configurable retention auto-purge, per-vault quota, per-type
+  storage breakdown, and a host activity log are built in.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Phone can't find the node | Same Wi-Fi? Host running? Try the IP URL manually; check Nearby needs UDP broadcast allowed |
+| Certificate warning on manual connect | Compare the fingerprint with the dashboard, then Trust & connect |
+| Backup finds nothing on Android | Pick the folder via the picker (grants access), grant media/files permission when asked |
+| Node stops overnight (Android) | Exempt LocalVault from battery optimization so the foreground service survives |
+| Pi service won't start | `systemctl --user status localvault`; ensure `STORAGE` path is mounted before boot (fstab) |
+| Port busy | The node auto-tries the next free port and shows it on the dashboard |
+
+## Develop
+
 ```bash
-flutter build linux --release
-# Output: build/linux/x64/release/bundle/
+flutter pub get
+flutter analyze        # must be clean
+flutter test           # unit + widget + integration (SQLite, server, isolate runner)
+flutter run -d linux   # desktop
+flutter build apk --release   # Android → build/app/outputs/flutter-apk/
 ```
 
-### Windows
-```bash
-flutter build windows --release
-# Output: build/windows/x64/runner/Release/
-```
+Architecture: `lib/app` (theme/router) · `lib/server` (shelf API on a
+background isolate) · `lib/data` (SQLite + repositories) · `lib/client`
+(Dio services, transfers, backup) · `lib/features` (screens) ·
+`lib/core` (auth crypto, discovery, disk, lock). See `DESIGN.md` for the
+design language and `TEST_PLAN.md` for manual test cases.
 
-### macOS
-```bash
-flutter build macos --release
-# Output: build/macos/Build/Products/Release/
-```
+## Current status (honest)
 
-### Development
-```bash
-flutter run                    # Run on connected device
-flutter run -d linux           # Run on Linux desktop
-flutter test                   # Run unit + widget tests
-flutter analyze                # Static analysis
-```
-
-## How It Works
-
-1. **Host Mode** (desktop): User selects a storage folder. The app creates `.localvault/` with a SQLite database and blob directories. A local HTTP server starts on port 8484. The host displays a QR code and 6-digit pairing code.
-
-2. **Client Mode** (Android/desktop): User scans the QR code or enters the server URL + pairing code. The client obtains an access/refresh token pair and can browse, upload, download, rename, move, delete files.
-
-3. **File Storage**: File bytes are stored under `.localvault/blobs/<xx>/<yy>/<uuid>`. Metadata (names, parent folders, sizes, checksums) lives in SQLite. Rename and move operations update only the database — no file copies needed.
-
-4. **Transfer Manager**: Uploads use chunked transfer with SHA-256 verification. Downloads support HTTP Range for resume. Progress is reported to the UI in real time.
-
-## Security Notes
-
-- All traffic is HTTP (unencrypted) on the local network. This is acceptable for LAN-only use but a clear warning is shown in the UI. HTTPS/TLS support can be added later.
-- Passwords are hashed with Argon2id (64 MiB memory, 3 iterations).
-- Tokens are 256-bit random values; only SHA-256 hashes are stored in the database.
-- Access tokens expire after 15 minutes; refresh tokens after 30 days.
-- Pairing codes are 6-digit, expire after 5 minutes, and are rate-limited.
-- File names are sanitized to prevent path traversal and injection attacks.
-- The server binds only to the local network interface (0.0.0.0).
-- The server does not implement port forwarding or public internet exposure.
-
-## Known Limitations
-
-- No HTTPS/TLS encryption on the wire (LAN-only HTTP).
-- Android Host Mode is optional and not included in the MVP.
-- Transfer tasks are in-memory; they do not survive app restarts.
-- No file versioning or deduplication beyond blob reuse.
-- No real-time sync — client must refresh to see new files.
-- Thumbnail generation is image-only and uses simple downscaling.
-- Disk space detection uses platform-specific commands (df/wmic) which may not work in all environments.
-- Host server runs on the main isolate; very heavy concurrent operations could impact UI responsiveness.
-- Drag-and-drop upload is desktop-only.
+- Video/PDF/Office thumbnails are not generated (images + text/code previews are).
+- Auto Backup runs while the app is open (Android background WorkManager sync is future work).
+- Raw SD-card paths on Android are limited by scoped storage — the app
+  external dir and picker-chosen folders work everywhere.
+- True internet exposure needs your VPN/port-forward (see above); there is no
+  relay server, by design.

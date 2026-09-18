@@ -16,6 +16,7 @@ class SettingsRepository {
   static const String deviceQuotaBytesKey = 'device_quota_bytes';
   static const String tlsCertPathKey = 'tls_cert_path';
   static const String tlsKeyPathKey = 'tls_key_path';
+  static const String dataVersionKey = 'data_version';
 
   String? get(String key) {
     final rows = _db.raw.select(
@@ -90,6 +91,14 @@ class SettingsRepository {
   String? get tlsCertPath => get(tlsCertPathKey);
   String? get tlsKeyPath => get(tlsKeyPathKey);
 
+  /// Monotonic revision bumped on every mutation; clients poll it for sync.
+  int get dataVersion => int.tryParse(get(dataVersionKey) ?? '0') ?? 0;
+
+  int bumpDataVersion() {
+    final next = dataVersion + 1;
+    set(dataVersionKey, '$next');
+    return next;
+  }
   set tlsPaths(({String cert, String key})? value) {
     if (value == null) {
       _setOrDelete(tlsCertPathKey, null);

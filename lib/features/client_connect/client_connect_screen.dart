@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/providers.dart';
+import '../../client/services/auth_service.dart';
 import '../../core/discovery/beacon.dart';
 import '../../widgets/common.dart';
 
@@ -41,6 +42,78 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
     super.dispose();
   }
 
+  Future<void> _savePinFor(String url, String fingerprint) async {
+    try {
+      final host = Uri.parse(url).host;
+      await ref.read(sessionStoreProvider).saveCertPin(host, fingerprint);
+      await ref.read(sessionStoreProvider).saveCertPin(
+          AuthService.hostKeyOf(url), fingerprint);
+      ref.read(apiClientProvider).setPinnedFingerprint(fingerprint);
+      setState(() => _trustHttps = false);
+    } catch (_) {}
+  }
+
+  /// Verify-on-first-use: for manual https URLs without a saved pin, fetch
+  /// the fingerprint and ask the user to confirm (compare with the host
+  /// dashboard value). Returns false when the user declines.
+  Future<bool> _ensurePin(String url) async {
+    if (!url.startsWith('https://')) return true;
+    final store = ref.read(sessionStoreProvider);
+    String? saved;
+    try {
+      final host = Uri.parse(url).host;
+      saved = await store.getCertPin(host) ??
+          await store.getCertPin(AuthService.hostKeyOf(url));
+    } catch (_) {}
+    if (saved != null && saved.isNotEmpty) {
+      ref.read(apiClientProvider).setPinnedFingerprint(saved);
+      return true;
+    }
+    if (!mounted) return false;
+    final messenger = ScaffoldMessenger.of(context);
+    String? fetched;
+    try {
+      messenger.showSnackBar(
+        const SnackBar(
+            content: Text('Fetching host certificate…'), duration: Duration(seconds: 2)),
+      );
+      fetched = await AuthService.fetchFingerprint(url);
+    } catch (e) {
+      if (!mounted) return false;
+      setState(() => _error = 'Could not fetch certificate: $e');
+      return false;
+    }
+    if (!mounted) return false;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Trust this host?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+                'Compare with Host Dashboard → Pairing → TLS fingerprint:'),
+            const SizedBox(height: 8),
+            SelectableText(fetched!,
+                style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Trust & connect')),
+        ],
+      ),
+    );
+    if (approved != true) return false;
+    await _savePinFor(url, fetched);
+    return true;
+  }
+
   Future<void> _connect() async {
     final url = _urlController.text.trim().replaceFirst(RegExp(r'/$'), '');
     final code = _codeController.text.trim();
@@ -75,6 +148,11 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
       _loading = true;
       _error = null;
     });
+    if (!await _ensurePin(url)) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      return;
+    }
     try {
       final authService = ref.read(authServiceProvider);
       ref.read(apiClientProvider).setTrustSelfSigned(_trustHttps);
@@ -160,17 +238,44 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
                 onDetect: (capture) {
                   final code = capture.barcodes.firstOrNull?.rawValue;
                   if (code == null) return;
-                  // Expected: localvault://192.168.x.x:8484 (host path without scheme)
+                  // Expected: localvault://host:port[?fp=<sha256>]
                   var cleaned = code.replaceFirst('localvault://', '').trim();
+                  String? fp;
+                  final qIndex = cleaned.indexOf('?');
+                  if (qIndex >= 0) {
+                    final query = cleaned.substring(qIndex + 1);
+                    cleaned = cleaned.substring(0, qIndex);
+                    for (final part in query.split('&')) {
+                      final kv = part.split('=');
+                      if (kv.length == 2 && kv[0] == 'fp') fp = kv[1];
+                    }
+                  }
                   if (!cleaned.startsWith('http')) {
                     cleaned = 'http://$cleaned';
                   }
                   cleaned = cleaned.replaceFirst('https://', 'http://');
-                  _urlController.text = cleaned;
-                  setState(() => _scanning = false);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('QR scanned — enter code to connect')),
-                  );
+                  // Fingerprint present → modern HTTPS host: upgrade + pin.
+                  // Absent → legacy plain-HTTP host: keep as scanned.
+                  if (fp != null && fp.isNotEmpty) {
+                    final httpsUrl =
+                        cleaned.replaceFirst('http://', 'https://');
+                    _urlController.text = httpsUrl;
+                    _savePinFor(httpsUrl, fp);
+                    setState(() => _scanning = false);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text(
+                              'QR scanned — certificate pinned. Enter code to connect.')),
+                    );
+                  } else {
+                    _urlController.text = cleaned;
+                    setState(() => _scanning = false);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content:
+                              Text('QR scanned — enter code to connect')),
+                    );
+                  }
                 },
               ),
             ),

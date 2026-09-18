@@ -22,7 +22,10 @@
 
 ## Design Assumptions
 
-9. **LAN-only HTTP** is acceptable for the MVP. HTTPS/TLS can be added later by adding certificate management to the shelf server and updating the client to accept custom certificates.
+9. **HTTPS by default.** Since v1.2.0 every node serves TLS with a per-vault
+   self-signed certificate (auto-generated, RSA-2048) and clients pin the
+   SHA-256 fingerprint (QR or verify-on-first-use). Clearing both TLS paths in
+   Host Settings falls back to plain HTTP — not recommended.
 
 10. **Host Mode on Android** is optional and not implemented in this MVP. The host server runs on desktop platforms only.
 

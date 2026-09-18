@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:localvault/data/datasources/vault.dart';
+import 'package:localvault/server/host_runner.dart';
 import 'package:localvault/server/server.dart';
 
 void main() {
@@ -118,6 +119,52 @@ void main() {
       expect(server.isRunning, isFalse);
       vault.close();
     } finally {
+      await storageDir.delete(recursive: true);
+    }
+  });
+
+  test('HostRunner serves HTTPS on a background isolate', () async {
+    final storageDir = Directory(
+        '${Directory.systemTemp.path}/lv_runner_${DateTime.now().millisecondsSinceEpoch}');
+    await storageDir.create(recursive: true);
+
+    HostRunner? runner;
+    try {
+      final created = await Vault.create(storageDir);
+      await created.completeSetup(
+          password: 'testpass', deviceName: 'Runner Host');
+      created.close();
+
+      runner = await HostRunner.start(
+          storagePath: storageDir.path, preferredPort: 0);
+      expect(runner.isRunning, isTrue);
+      expect(runner.port, greaterThan(0));
+      // Auto-TLS: fingerprint looks like hex sha256.
+      expect(runner.fingerprint, isNotNull);
+      expect(runner.fingerprint!.length, 64);
+
+      final client = HttpClient()
+        ..badCertificateCallback = (cert, host, port) => true;
+      final request = await client.getUrl(Uri.parse(
+          'https://127.0.0.1:${runner.port}/health'));
+      final response = await request.close();
+      expect(response.statusCode, 200);
+      client.close();
+
+      // Pairing RPC crosses the isolate boundary.
+      final devices = runner.vault.devices.listAll();
+      expect(devices, isNotEmpty);
+      final code =
+          await runner.ensurePairingCode(devices.first.id);
+      expect(code.length, 6);
+
+      await runner.stop();
+      runner = null;
+      expect(runner == null, isTrue);
+    } finally {
+      try {
+        await runner?.stop();
+      } catch (_) {}
       await storageDir.delete(recursive: true);
     }
   });

@@ -50,7 +50,6 @@ class _TransfersScreenState extends ConsumerState<TransfersScreen> {
                 final progress = task.totalBytes > 0
                     ? task.transferredBytes / task.totalBytes
                     : 0.0;
-                final isUpload = task.type == TransferType.upload;
 
                 return Card(
                   margin:
@@ -90,7 +89,7 @@ class _TransfersScreenState extends ConsumerState<TransfersScreen> {
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              _statusLabel(task.status, isUpload),
+                              _statusLabel(task),
                               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                     color: _statusColor(task.status, colors),
                                     fontWeight: FontWeight.bold,
@@ -143,7 +142,9 @@ class _TransfersScreenState extends ConsumerState<TransfersScreen> {
     }
   }
 
-  String _statusLabel(TransferStatus s, bool isUpload) {
+  String _statusLabel(TransferTask task) {
+    final s = task.status;
+    final isUpload = task.type == TransferType.upload;
     final verb = isUpload ? 'Upload' : 'Download';
     switch (s) {
       case TransferStatus.queued:
@@ -151,7 +152,7 @@ class _TransfersScreenState extends ConsumerState<TransfersScreen> {
       case TransferStatus.running:
         return '$verb…';
       case TransferStatus.completed:
-        return 'Done';
+        return task.verified ? 'Done • verified' : 'Done';
       case TransferStatus.failed:
         return 'Failed';
       case TransferStatus.cancelled:

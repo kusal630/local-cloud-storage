@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'providers.dart';
+
 import '../features/client_connect/client_connect_screen.dart';
 import '../features/devices/devices_screen.dart';
 import '../features/files/files_screen.dart';
@@ -9,6 +11,7 @@ import '../features/host_dashboard/host_dashboard_screen.dart';
 import '../features/host_setup/host_setup_screen.dart';
 import '../features/preview/preview_screen.dart';
 import '../features/settings/settings_screen.dart';
+import '../features/sharing/shared_links_screen.dart';
 import '../features/storage/storage_screen.dart';
 import '../features/transfers/transfers_screen.dart';
 import '../features/trash/trash_screen.dart';
@@ -17,9 +20,11 @@ import '../features/welcome/welcome_screen.dart';
 final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final routerProvider = Provider<GoRouter>((ref) {
+  // Auto-setup (Pi/kiosk) boots straight into the running dashboard.
+  final autoHost = ref.watch(hostStateProvider);
   return GoRouter(
     navigatorKey: rootNavigatorKey,
-    initialLocation: '/',
+    initialLocation: autoHost != null ? '/host/dashboard' : '/',
     routes: [
       GoRoute(
         path: '/',
@@ -85,6 +90,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => PreviewScreen(
           fileId: state.pathParameters['fileId']!,
         ),
+      ),
+      GoRoute(
+        path: '/client/sharing',
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => const SharedLinksScreen(),
       ),
     ],
   );

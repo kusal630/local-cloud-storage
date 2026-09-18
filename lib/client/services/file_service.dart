@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -5,6 +6,7 @@ import 'package:dio/dio.dart';
 import '../../data/models/audit_entry.dart';
 import '../../data/models/device.dart';
 import '../../data/models/file_version.dart';
+import '../../data/models/shared_link.dart';
 import '../../data/models/storage_status.dart';
 import '../../data/models/vault_file.dart';
 import '../api_client.dart';
@@ -246,6 +248,84 @@ class FileService {
     }
   }
 
+  Future<int> syncVersion() async {
+    try {
+      final response = await _dio.get('/sync/version');
+      final data = LocalVaultApi.decodeData(response);
+      return (data['version'] as num).toInt();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<({String token, SharedLink link})> createShare({
+    required String fileId,
+    double? expiresInHours,
+    String? password,
+  }) async {
+    try {
+      final response = await _dio.post('/shares', data: {
+        'fileId': fileId,
+        if (expiresInHours != null) 'expiresInHours': expiresInHours,
+        if (password != null && password.isNotEmpty) 'password': password,
+      });
+      final data = LocalVaultApi.decodeData(response);
+      return (
+        token: data['token'] as String,
+        link: _parseShare(data['item'] as Map<String, dynamic>),
+      );
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<SharedLink>> listShares() async {
+    try {
+      final response = await _dio.get('/shares');
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseShare).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<void> deleteShare(String tokenPrefix) async {
+    try {
+      final response = await _dio.delete('/shares/$tokenPrefix');
+      LocalVaultApi.decodeData(response);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<Device> createApiToken({required String name, int days = 365}) async {
+    try {
+      final response = await _dio.post('/devices/token', data: {
+        'name': name,
+        'days': days,
+      });
+      final data = LocalVaultApi.decodeData(response);
+      // Plaintext tokens come back once; surface via the device note.
+      final device = _parseDevice(data['device'] as Map<String, dynamic>);
+      _lastApiTokens = (
+        access: data['accessToken'] as String,
+        refresh: data['refreshToken'] as String,
+      );
+      return device;
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  /// Plaintext of the most recently created API token (returned once).
+  ({String access, String refresh})? _lastApiTokens;
+  ({String access, String refresh})? takeLastApiTokens() {
+    final t = _lastApiTokens;
+    _lastApiTokens = null;
+    return t;
+  }
+
   Future<List<VaultFile>> listTrash() async {
     try {
       final response = await _dio.get('/trash');
@@ -473,6 +553,44 @@ class FileService {
     }
   }
 
+  /// First bytes of a file for text preview (Range-capped, never the whole
+  /// file — safe for large logs/code).
+  Future<String> previewText(String fileId, {int maxBytes = 131072}) async {
+    try {
+      final response = await _dio.get(
+        '/files/$fileId/content',
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: {'Range': 'bytes=0-${maxBytes - 1}'},
+        ),
+      );
+      final bytes = (response.data as List).cast<int>();
+      // Never throw on binary content; replacement chars are fine.
+      return utf8.decode(bytes, allowMalformed: true);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  /// True for text/code that renders well in the built-in text preview.
+  static bool isTextPreviewable(String name, String? mime) {
+    final m = (mime ?? '').toLowerCase();
+    if (m.startsWith('text/') ||
+        m.contains('json') ||
+        m.contains('xml') ||
+        m.contains('javascript') ||
+        m.contains('yaml')) {
+      return true;
+    }
+    const exts = {
+      'txt', 'md', 'csv', 'log', 'json', 'yaml', 'yml', 'xml', 'html',
+      'css', 'js', 'ts', 'dart', 'py', 'rs', 'go', 'java', 'kt', 'c',
+      'h', 'cpp', 'sh', 'toml', 'ini', 'cfg', 'gradle', 'sql', 'r',
+    };
+    final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    return exts.contains(ext);
+  }
+
   // ---------------------------------------------------------------------------
   // Mappers
   // ---------------------------------------------------------------------------
@@ -517,6 +635,18 @@ class FileService {
         targetName: m['targetName'] as String?,
         detail: m['detail'] as String?,
         createdAt: DateTime.parse(m['createdAt'] as String),
+      );
+
+  static SharedLink _parseShare(Map<String, dynamic> m) => SharedLink(
+        tokenPrefix: m['tokenPrefix'] as String? ?? '',
+        fileId: m['fileId'] as String,
+        fileName: m['fileName'] as String,
+        hasPassword: m['hasPassword'] as bool? ?? false,
+        expiresAt: m['expiresAt'] == null
+            ? null
+            : DateTime.parse(m['expiresAt'] as String),
+        createdAt: DateTime.parse(m['createdAt'] as String),
+        downloadCount: (m['downloadCount'] as num?)?.toInt() ?? 0,
       );
 
   static Device _parseDevice(Map<String, dynamic> m) => Device(

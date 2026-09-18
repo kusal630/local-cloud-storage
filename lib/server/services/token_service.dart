@@ -13,10 +13,15 @@ class TokenService {
   final Vault vault;
 
   /// Creates a brand new device with a fresh access + refresh token pair.
+  ///
+  /// [accessLifetime]/[refreshLifetime] override the defaults (used for
+  /// long-lived API tokens).
   AuthTokens createDevice({
     required String deviceId,
     required String deviceName,
     bool isCurrent = false,
+    Duration? accessLifetime,
+    Duration? refreshLifetime,
   }) {
     final accessToken = Cipher.randomHex(32);
     final refreshToken = Cipher.randomHex(32);
@@ -25,9 +30,12 @@ class TokenService {
       id: deviceId,
       name: deviceName,
       accessTokenHash: Cipher.sha256String(accessToken),
-      accessTokenExpiresAt: now.add(AppConstants.accessTokenLifetime).millisecondsSinceEpoch,
+      accessTokenExpiresAt:
+          now.add(accessLifetime ?? AppConstants.accessTokenLifetime).millisecondsSinceEpoch,
       refreshTokenHash: Cipher.sha256String(refreshToken),
-      refreshTokenExpiresAt: now.add(AppConstants.refreshTokenLifetime).millisecondsSinceEpoch,
+      refreshTokenExpiresAt: now
+          .add(refreshLifetime ?? AppConstants.refreshTokenLifetime)
+          .millisecondsSinceEpoch,
       isCurrent: isCurrent,
     );
     return AuthTokens(

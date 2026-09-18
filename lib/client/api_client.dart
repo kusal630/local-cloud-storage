@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 
@@ -37,20 +39,52 @@ class LocalVaultApi {
   String? get serverUrl => _serverUrl;
 
   bool _trustSelfSigned = false;
+  String? _pinnedFingerprint;
 
-  /// When true, TLS certificate errors are ignored (LAN self-signed certs).
-  /// Off by default; enable only for hosts you trust.
+  /// Pins the expected SHA-256 fingerprint (lowercase hex) of the host
+  /// certificate. When set, TLS succeeds only if the presented chain matches
+  /// — protection against LAN MITM even with self-signed certs. Pass null to
+  /// clear the pin.
+  void setPinnedFingerprint(String? fingerprint) {
+    _pinnedFingerprint = fingerprint?.toLowerCase().replaceAll(':', '');
+    _applyTrust();
+  }
+
+  /// Legacy escape hatch: trust any self-signed cert (used only during the
+  /// verify-on-first-use fingerprint fetch).
   void setTrustSelfSigned(bool value) {
     _trustSelfSigned = value;
+    _applyTrust();
+  }
+
+  void _applyTrust() {
     final adapter = _dio.httpClientAdapter;
     if (adapter is IOHttpClientAdapter) {
+      final pinned = _pinnedFingerprint;
       adapter.createHttpClient = () {
         final client = HttpClient();
-        client.badCertificateCallback =
-            (cert, host, port) => _trustSelfSigned;
+        client.badCertificateCallback = (cert, host, port) {
+          if (pinned != null && pinned.isNotEmpty) {
+            try {
+              final fp = sha256.convert(cert.der).toString();
+              return fp == pinned;
+            } catch (_) {
+              return false;
+            }
+          }
+          return _trustSelfSigned;
+        };
         return client;
       };
     }
+  }
+
+  /// Lowercase hex SHA-256 fingerprint of a PEM certificate.
+  static String fingerprintOfPem(String pem) {
+    final lines = const LineSplitter().convert(pem.trim());
+    final der = base64.decode(
+        lines.where((l) => !l.startsWith('-----')).join());
+    return sha256.convert(der).toString();
   }
 
   /// Configures the base URL. Expected format: `http://host:port`.

@@ -20,6 +20,7 @@ class SessionStore {
   static const _kDeviceId = 'device_id';
   static const _kServerUrl = 'server_url';
   static const _kDeviceName = 'device_name';
+  static const _kCertPins = 'cert_pins';
 
   Future<SharedPreferences> get _shared async =>
       _prefs ??= await SharedPreferences.getInstance();
@@ -73,5 +74,24 @@ class SessionStore {
     final prefs = await _shared;
     await prefs.remove(_kServerUrl);
     await prefs.remove(_kDeviceName);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Certificate pins (TOFU fingerprints per host, "host" or "host:port")
+  // ---------------------------------------------------------------------------
+
+  Future<String?> getCertPin(String hostKey) async {
+    final prefs = await _shared;
+    return prefs.getString('$_kCertPins:$hostKey');
+  }
+
+  Future<void> saveCertPin(String hostKey, String fingerprint) async {
+    final prefs = await _shared;
+    await prefs.setString('$_kCertPins:$hostKey', fingerprint);
+  }
+
+  Future<void> clearCertPin(String hostKey) async {
+    final prefs = await _shared;
+    await prefs.remove('$_kCertPins:$hostKey');
   }
 }

@@ -1,6 +1,10 @@
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:localvault/client/api_client.dart';
 import 'package:localvault/client/services/backup_service.dart';
+import 'package:localvault/client/session_store.dart';
 import 'package:localvault/core/utils/file_kinds.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test('categoryOf classifies by mime first', () {
@@ -78,5 +82,22 @@ void main() {
     expect(BackupService.shouldSkip('a.jpg', 0), isTrue);
     expect(BackupService.shouldSkip(
         'a.mp4', BackupService.maxFileBytes + 1), isTrue);
+  });
+
+  test('cert pins round-trip per host', () async {
+    SharedPreferences.setMockInitialValues({});
+    final store = SessionStore();
+    expect(await store.getCertPin('192.168.1.5'), isNull);
+    await store.saveCertPin('192.168.1.5', 'abc123');
+    expect(await store.getCertPin('192.168.1.5'), 'abc123');
+    await store.clearCertPin('192.168.1.5');
+    expect(await store.getCertPin('192.168.1.5'), isNull);
+  });
+
+  test('fingerprintOfPem hashes the DER bytes', () {
+    // DER [1,2,3] is base64 'AQID'.
+    const pem = '-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----';
+    expect(LocalVaultApi.fingerprintOfPem(pem),
+        sha256.convert([1, 2, 3]).toString());
   });
 }

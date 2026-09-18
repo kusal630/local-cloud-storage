@@ -60,6 +60,8 @@ class TransferTask {
   final DateTime createdAt;
   DateTime? startedAt;
   double speedBps = 0;
+  /// True when a download's SHA-256 was verified against the vault checksum.
+  bool verified = false;
   int _lastBytes = 0;
   DateTime? _lastTick;
 
@@ -237,6 +239,7 @@ class TransferManager extends ChangeNotifier {
     required String name,
     required String destDir,
     required int totalBytes,
+    String? checksum,
   }) {
     final task = TransferTask(
       id: const Uuid().v4(),
@@ -245,6 +248,7 @@ class TransferManager extends ChangeNotifier {
       totalBytes: totalBytes,
       fileId: fileId,
       destPath: p.join(destDir, name),
+      checksum: checksum,
     );
     _tasks.add(task);
     _changed();
@@ -391,6 +395,25 @@ class TransferManager extends ChangeNotifier {
       } else {
         task.status = TransferStatus.completed;
         task.transferredBytes = task.totalBytes;
+        // Verify integrity against the vault checksum when known.
+        if (task.checksum != null && task.checksum!.isNotEmpty) {
+          try {
+            final actual = await compute(_computeChecksum, task.destPath!);
+            if (actual == task.checksum) {
+              task.verified = true;
+            } else {
+              task.status = TransferStatus.failed;
+              task.error =
+                  'Checksum mismatch — download deleted. Retry to fetch again.';
+              logError('Download checksum mismatch: ${task.name}', null);
+              try {
+                await File(task.destPath!).delete();
+              } catch (_) {}
+            }
+          } catch (e) {
+            logError('Download verification failed: ${task.name}', e);
+          }
+        }
       }
       _changed();
     } catch (e) {

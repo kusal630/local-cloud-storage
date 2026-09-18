@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 
 import '../../core/errors/app_exceptions.dart';
 import '../api_client.dart';
@@ -16,6 +20,28 @@ class AuthService {
       baseUrl: serverUrl,
       connectTimeout: const Duration(seconds: 5),
     ));
+    // Mirror the session's trust settings for the probe.
+    try {
+      final host = Uri.parse(serverUrl).host;
+      final pin = await api.session.getCertPin(host);
+      final adapter = dio.httpClientAdapter;
+      if (adapter is IOHttpClientAdapter) {
+        adapter.createHttpClient = () {
+          final client = HttpClient();
+          client.badCertificateCallback = (cert, h, p) {
+            if (pin != null && pin.isNotEmpty) {
+              try {
+                return sha256.convert(cert.der).toString() == pin;
+              } catch (_) {
+                return false;
+              }
+            }
+            return false;
+          };
+          return client;
+        };
+      }
+    } catch (_) {}
     try {
       final response = await dio.get('/health');
       if (response.statusCode != 200) {
@@ -32,6 +58,45 @@ class AuthService {
     }
   }
 
+  static String hostKeyOf(String serverUrl) {
+    try {
+      final uri = Uri.parse(serverUrl);
+      return uri.hasPort ? '${uri.host}:${uri.port}' : uri.host;
+    } catch (_) {
+      return serverUrl;
+    }
+  }
+
+  /// Applies the saved certificate pin (if any) for [serverUrl].
+  Future<void> applySavedPin(String serverUrl) async {
+    try {
+      final uri = Uri.parse(serverUrl);
+      final pin = await api.session.getCertPin(uri.host) ??
+          await api.session.getCertPin(hostKeyOf(serverUrl));
+      api.setPinnedFingerprint(pin);
+    } catch (_) {}
+  }
+
+  /// Fetches the SHA-256 fingerprint of the TLS certificate at [serverUrl]
+  /// (trust-all, one shot — caller must show it to the user for approval).
+  static Future<String> fetchFingerprint(String serverUrl) async {
+    final uri = Uri.parse(serverUrl);
+    final port = uri.hasPort ? uri.port : 443;
+    final socket = await SecureSocket.connect(
+      uri.host,
+      port,
+      timeout: const Duration(seconds: 8),
+      onBadCertificate: (_) => true,
+    );
+    try {
+      final cert = socket.peerCertificate;
+      if (cert == null) throw const NetworkException('No certificate.');
+      return sha256.convert(cert.der).toString();
+    } finally {
+      socket.destroy();
+    }
+  }
+
   /// Pairs a new device using a short-lived 6-digit code.
   Future<void> pair({
     required String serverUrl,
@@ -40,6 +105,7 @@ class AuthService {
   }) async {
     await checkHealth(serverUrl);
     api.configure(serverUrl);
+    await applySavedPin(serverUrl);
     try {
       final response = await api.dio.post(
         '/pair',
@@ -76,6 +142,7 @@ class AuthService {
   }) async {
     await checkHealth(serverUrl);
     api.configure(serverUrl);
+    await applySavedPin(serverUrl);
     try {
       final response = await api.dio.post(
         '/auth/login',

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'dart:async';
 import 'package:localvault/app/providers.dart';
+import 'package:localvault/client/services/file_service.dart';
 import 'package:localvault/data/models/file_version.dart';
 import 'package:localvault/data/models/vault_file.dart';
 import 'package:localvault/widgets/common.dart';
@@ -87,6 +88,7 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
                     name: file.name,
                     destDir: dir,
                     totalBytes: file.size,
+                    checksum: file.checksum,
                   );
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -280,6 +282,8 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
   @override
   Widget build(BuildContext context) {
     final file = widget.file;
+    final previewable =
+        !file.isFolder && FileService.isTextPreviewable(file.name, file.mime);
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -290,6 +294,10 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
         Text(file.name,
             style: Theme.of(context).textTheme.headlineSmall,
             textAlign: TextAlign.center),
+        if (previewable) ...[
+          const SizedBox(height: 16),
+          _PreviewTextCard(fileId: file.id, fileName: file.name),
+        ],
         if (file.isFavorite)
           const Padding(
             padding: EdgeInsets.only(top: 8),
@@ -368,4 +376,76 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
         title: Text(label),
         subtitle: Text(value),
       );
+}
+
+/// Capped plain-text preview for code/logs/notes (first ~128 KB).
+class _PreviewTextCard extends ConsumerStatefulWidget {
+  final String fileId;
+  final String fileName;
+  const _PreviewTextCard({required this.fileId, required this.fileName});
+  @override
+  ConsumerState<_PreviewTextCard> createState() => _PreviewTextCardState();
+}
+
+class _PreviewTextCardState extends ConsumerState<_PreviewTextCard> {
+  String? _text;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final text =
+          await ref.read(fileServiceProvider).previewText(widget.fileId);
+      if (!mounted) return;
+      setState(() => _text = text);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return ErrorState(message: 'Text preview failed.', onRetry: () {
+        setState(() => _error = null);
+        _load();
+      });
+    }
+    if (_text == null) return const LoadingIndicator();
+    final lines = _text!.split('\n');
+    final shown = lines.take(60).join('\n');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionHeader(title: 'PREVIEW'),
+            SelectableText(
+              shown,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontFamilyFallback: ['Courier'],
+                fontSize: 12,
+              ),
+            ),
+            if (lines.length > 60)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '… ${lines.length - 60} more lines — download for the full file.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }

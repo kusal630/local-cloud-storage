@@ -1,4 +1,5 @@
 import 'package:sqlite3/sqlite3.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/errors/app_exceptions.dart';
 import '../database/vault_database.dart';
@@ -63,6 +64,34 @@ class DeviceRepository {
     );
     if (rows.isEmpty) throw const NotFoundException('Device not found.');
     return _fromRow(rows.first);
+  }
+
+  /// Returns the host's own device row, creating it on first setup.
+  ///
+  /// The host row anchors pairing codes and the dashboard device list. It
+  /// carries no tokens — the host uses direct vault access, never HTTP.
+  Device ensureHostDevice(String name) {
+    final rows = _db.raw.select(
+      '''
+      SELECT * FROM devices
+      WHERE is_current = 1 AND revoked_at IS NULL
+      ORDER BY created_at DESC LIMIT 1
+      ''',
+    );
+    if (rows.isNotEmpty) return _fromRow(rows.first);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final id = const Uuid().v4();
+    _db.raw.execute(
+      '''
+      INSERT INTO devices
+        (id, name, access_token_hash, access_token_expires_at,
+         refresh_token_hash, refresh_token_expires_at,
+         created_at, last_seen_at, revoked_at, is_current)
+      VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL, 1)
+      ''',
+      [id, name, now, now],
+    );
+    return getById(id);
   }
 
   /// Returns the first live (non-revoked) device with a matching name, if any.

@@ -1,0 +1,15 @@
+[Unit]
+Description=LocalVault personal cloud (headless via Xvfb)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/xvfb-run -a @HOME@/localvault/localvault
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:99
+# Port is baked in via dart-define; @PORT@ kept for documentation.
+
+[Install]
+WantedBy=default.target

@@ -18,6 +18,7 @@ import '../repositories/blob_repository.dart';
 import '../repositories/device_repository.dart';
 import '../repositories/file_repository.dart';
 import '../repositories/settings_repository.dart';
+import '../repositories/share_repository.dart';
 import '../repositories/upload_session_repository.dart';
 import '../repositories/version_repository.dart';
 import '../repositories/audit_repository.dart';
@@ -35,6 +36,7 @@ class Vault {
     required this.uploads,
     required this.versions,
     required this.audit,
+    required this.shares,
   });
 
   factory Vault.from({
@@ -51,6 +53,7 @@ class Vault {
       uploads: UploadSessionRepository(database),
       versions: VersionRepository(database),
       audit: AuditRepository(database),
+      shares: ShareRepository(database),
     );
   }
 
@@ -63,6 +66,7 @@ class Vault {
   final UploadSessionRepository uploads;
   final VersionRepository versions;
   final AuditRepository audit;
+  final ShareRepository shares;
 
   Directory get blobsDir =>
       Directory(p.join(vaultDir.path, AppConstants.blobsDirName));
@@ -112,6 +116,12 @@ class Vault {
     ]) {
       await Directory(p.join(vaultDir.path, name)).create(recursive: true);
     }
+    // Lock the vault at the filesystem level (owner-only) on POSIX systems.
+    try {
+      if (Platform.isLinux || Platform.isMacOS || Platform.isAndroid) {
+        await Process.run('chmod', ['700', vaultDir.path]);
+      }
+    } catch (_) {}
   }
 
   bool get isSetup => settings.setupComplete;
@@ -137,6 +147,7 @@ class Vault {
     settings.hostDeviceName = deviceName;
     settings.ownerUsername = clean;
     settings.setupComplete = true;
+    devices.ensureHostDevice(deviceName);
   }
 
   Future<bool> verifyPassword(String password) async {
@@ -228,10 +239,12 @@ class Vault {
     int total = 0;
     int free = 0;
     try {
-      final totalValue = await DiskSpaceCompat.getTotalDiskSpace();
-      final freeValue = await DiskSpaceCompat.getFreeDiskSpace();
-      total = totalValue ?? 0;
-      free = freeValue ?? 0;
+      final space = await DiskSpaceCompat.getSpace(storageRoot.path);
+      if (space == null) {
+        throw const StorageException('Storage is unavailable.');
+      }
+      total = space.total;
+      free = space.free;
     } catch (e) {
       logError('storageStatus: could not query disk space', e);
       throw StorageException('Storage is unavailable.', cause: e);
@@ -280,6 +293,7 @@ class Vault {
     final cutoff = DateTime.now().subtract(Duration(days: days));
     final orphans = files.purgeTrashOlderThan(cutoff, blobs);
     await deleteOrphanedBlobs(orphans);
+    settings.bumpDataVersion();
     audit.record(action: 'trash.purge', detail: 'retention_days=$days');
     return orphans.length;
   }
@@ -292,6 +306,24 @@ class Vault {
     String? detail,
   }) {
     audit.record(
+      deviceId: deviceId,
+      action: action,
+      targetId: targetId,
+      targetName: targetName,
+      detail: detail,
+    );
+  }
+
+  /// Records a data mutation (bumps sync revision + audit entry).
+  void mutated({
+    String? deviceId,
+    required String action,
+    String? targetId,
+    String? targetName,
+    String? detail,
+  }) {
+    settings.bumpDataVersion();
+    auditAction(
       deviceId: deviceId,
       action: action,
       targetId: targetId,

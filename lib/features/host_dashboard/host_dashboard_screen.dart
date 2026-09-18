@@ -113,6 +113,8 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                     children: [
                       const SectionHeader(title: 'DEVICES'),
                       _DevicesList(vault: vault),
+                      const SizedBox(height: 8),
+                      _ApiTokenButton(server: server),
                     ],
                   ),
                 ),
@@ -221,20 +223,30 @@ class _PairingSection extends StatefulWidget {
 class _PairingSectionState extends State<_PairingSection> {
   String? _code;
   String? _lanHost;
+  String? _fingerprint;
+  bool _loadingCode = true;
 
   @override
   void initState() {
     super.initState();
     _resolveLan();
+    _loadCode();
   }
 
   Future<void> _resolveLan() async {
     try {
       final url = await (widget.server.lanUrl() as Future<String?>);
       if (!mounted) return;
+      final scheme =
+          (widget.server.scheme as String?) ?? 'https';
       setState(() {
-        _lanHost = (url ?? 'http://localhost:${widget.server.port}')
+        _lanHost = (url ?? '$scheme://localhost:${widget.server.port}')
             .replaceFirst(RegExp(r'^https?://'), '');
+        try {
+          _fingerprint = widget.server.fingerprint as String?;
+        } catch (_) {
+          _fingerprint = null;
+        }
       });
     } catch (_) {
       if (!mounted) return;
@@ -242,40 +254,97 @@ class _PairingSectionState extends State<_PairingSection> {
     }
   }
 
+  Future<void> _loadCode({bool regenerate = false}) async {
+    if (!regenerate) setState(() => _loadingCode = true);
+    try {
+      final devices = widget.vault.devices.listAll() as List;
+      if (devices.isEmpty) {
+        if (!mounted) return;
+        setState(() => _loadingCode = false);
+        return;
+      }
+      final code = await (widget.server.ensurePairingCode(
+          devices.first.id) as Future<String>);
+      if (!mounted) return;
+      setState(() {
+        _code = code;
+        _loadingCode = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingCode = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final vault = widget.vault;
-    final server = widget.server;
-    final devices = vault.devices.listAll();
+    List devices = const [];
+    try {
+      devices = vault.devices.listAll() as List;
+    } catch (_) {}
     if (devices.isEmpty) return const Text('No host device found.');
-    _code ??= server.ensurePairingCode(devices.first.id);
 
+    final qrData = _lanHost == null
+        ? null
+        : (_fingerprint == null || _fingerprint!.isEmpty)
+            ? 'localvault://$_lanHost'
+            : 'localvault://$_lanHost?fp=$_fingerprint';
     return Column(
       children: [
-        if (_lanHost == null)
+        if (qrData == null)
           const LoadingIndicator()
         else
           QrImageView(
-            data: 'localvault://$_lanHost',
+            data: qrData,
             version: QrVersions.auto,
             size: 180,
           ),
         const SizedBox(height: 12),
-        SelectableText(
-          _code!,
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-        ),
+        if (_loadingCode || _code == null || _code!.isEmpty)
+          const LoadingIndicator()
+        else
+          SelectableText(
+            _code!,
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+          ),
         const SizedBox(height: 4),
         Text('Expires in 5 minutes',
             style: Theme.of(context).textTheme.bodySmall),
+        if (_fingerprint != null && _fingerprint!.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.lock_rounded, size: 20),
+            title: const Text('TLS fingerprint'),
+            subtitle: SelectableText(
+              _fingerprint!,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            trailing: IconButton(
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: _fingerprint!));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Fingerprint copied')),
+                );
+              },
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
         OutlinedButton(
-          onPressed: () => setState(() {
-            _code = server.ensurePairingCode(devices.first.id);
-          }),
+          onPressed: () {
+            setState(() => _code = null);
+            _loadCode(regenerate: true);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Pairing code refreshed')),
+            );
+          },
           child: const Text('Regenerate'),
         ),
       ],
@@ -544,6 +613,125 @@ class _HostSettingsState extends State<_HostSettings> {
 /// Explains how this node is reached: any network path to the device works
 /// (same Wi-Fi, phone hotspot, Tailscale/ZeroTier VPN); true anywhere-access
 /// needs a VPN or a port-forward of the server port on the router.
+/// Creates long-lived API tokens for scripts and automation. The plaintext
+/// is shown exactly once.
+class _ApiTokenButton extends StatefulWidget {
+  final dynamic server;
+  const _ApiTokenButton({required this.server});
+  @override
+  State<_ApiTokenButton> createState() => _ApiTokenButtonState();
+}
+
+class _ApiTokenButtonState extends State<_ApiTokenButton> {
+  bool _busy = false;
+
+  Future<void> _create() async {
+    final nameController = TextEditingController(text: 'automation');
+    final daysController = TextEditingController(text: '365');
+    final input = await showDialog<({String name, int days})>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('New API token'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration:
+                  const InputDecoration(labelText: 'Name (e.g. pi-sync)'),
+            ),
+            TextField(
+              controller: daysController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                  labelText: 'Valid for (days, max 3650)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, (
+                    name: nameController.text.trim().isEmpty
+                        ? 'automation'
+                        : nameController.text.trim(),
+                    days: int.tryParse(daysController.text.trim()) ?? 365,
+                  )),
+              child: const Text('Create')),
+        ],
+      ),
+    );
+    if (input == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final created = await (widget.server.createApiToken(
+        name: input.name,
+        days: input.days.clamp(1, 3650),
+      ) as Future<({String deviceId, String access, String refresh})>);
+      if (!mounted) return;
+      setState(() => _busy = false);
+      if (created.access.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Token creation failed.')),
+        );
+        return;
+      }
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Token created — copy now'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Shown exactly once:'),
+              const SizedBox(height: 8),
+              SelectableText('Access:\n${created.access}'),
+              const SizedBox(height: 8),
+              SelectableText('Refresh:\n${created.refresh}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Done')),
+            FilledButton.icon(
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy access'),
+              onPressed: () {
+                Clipboard.setData(
+                    ClipboardData(text: created.access));
+                Navigator.pop(ctx);
+              },
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Failed: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: _busy ? null : _create,
+      icon: _busy
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2))
+          : const Icon(Icons.key_rounded),
+      label: const Text('New API token (scripts & automation)'),
+    );
+  }
+}
+
 class _RemoteAccess extends StatelessWidget {
   final dynamic vault;
   final dynamic server;

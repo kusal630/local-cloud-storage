@@ -17,6 +17,7 @@ import '../../data/datasources/vault.dart';
 import '../../data/models/audit_entry.dart';
 import '../../data/models/device.dart';
 import '../../data/models/file_version.dart';
+import '../../data/models/shared_link.dart';
 import '../../data/models/vault_file.dart';
 import '../middleware/api_responses.dart';
 import '../middleware/auth_middleware.dart';
@@ -59,6 +60,16 @@ Map<String, Object?> auditToJson(AuditEntry a) => {
       'targetName': a.targetName,
       'detail': a.detail,
       'createdAt': a.createdAt.toIso8601String(),
+    };
+
+Map<String, Object?> shareToJson(SharedLink s) => {
+      'tokenPrefix': s.tokenPrefix,
+      'fileId': s.fileId,
+      'fileName': s.fileName,
+      'hasPassword': s.hasPassword,
+      'expiresAt': s.expiresAt?.toIso8601String(),
+      'createdAt': s.createdAt.toIso8601String(),
+      'downloadCount': s.downloadCount,
     };
 
 Map<String, Object?> deviceToJson(Device d) => {
@@ -275,7 +286,7 @@ class ApiHandlers {
     final parentId = body['parentId']?.toString() ?? AppConstants.rootFolderId;
     final name = body['name']?.toString() ?? '';
     final folder = vault.files.createFolder(parentId, name);
-    vault.auditAction(
+    vault.mutated(
       deviceId: device.id,
       action: 'folder.create',
       targetId: folder.id,
@@ -443,7 +454,7 @@ class ApiHandlers {
         mime: session.mime,
       );
       unawaited(vault.generateThumbnail(updated));
-      vault.auditAction(
+      vault.mutated(
         action: 'file.version.create',
         targetId: updated.id,
         targetName: updated.name,
@@ -461,7 +472,7 @@ class ApiHandlers {
     );
     // Fire and forget thumbnail generation; failures are logged, not fatal.
     unawaited(vault.generateThumbnail(file));
-    vault.auditAction(
+    vault.mutated(
       action: 'file.upload',
       targetId: file.id,
       targetName: file.name,
@@ -516,7 +527,7 @@ class ApiHandlers {
       final name = body['name']?.toString() ?? '';
       final before = entry.name;
       entry = vault.files.rename(id, name);
-      vault.auditAction(
+      vault.mutated(
         deviceId: device.id,
         action: 'file.rename',
         targetId: id,
@@ -527,7 +538,7 @@ class ApiHandlers {
     if (body.containsKey('parentId')) {
       final parentId = body['parentId']?.toString() ?? '';
       entry = vault.files.move(id, parentId);
-      vault.auditAction(
+      vault.mutated(
         deviceId: device.id,
         action: 'file.move',
         targetId: id,
@@ -538,7 +549,7 @@ class ApiHandlers {
       final raw = body['isFavorite'];
       final value = raw == true || raw == 1 || raw == '1' || raw == 'true';
       entry = vault.files.setFavorite(id, value);
-      vault.auditAction(
+      vault.mutated(
         deviceId: device.id,
         action: value ? 'file.star' : 'file.unstar',
         targetId: id,
@@ -555,7 +566,7 @@ class ApiHandlers {
       name = vault.files.getById(id).name;
     } catch (_) {}
     vault.files.softDelete(id);
-    vault.auditAction(
+    vault.mutated(
       deviceId: device.id,
       action: 'file.trash',
       targetId: id,
@@ -626,7 +637,7 @@ class ApiHandlers {
       mime: archived.mime,
     );
     unawaited(vault.generateThumbnail(updated));
-    vault.auditAction(
+    vault.mutated(
       deviceId: device.id,
       action: 'file.version.restore',
       targetId: id,
@@ -702,10 +713,14 @@ class ApiHandlers {
     });
   }
 
+  Future<Response> syncVersion(Request request) async {
+    return ApiResponses.ok({'version': vault.settings.dataVersion});
+  }
+
   Future<Response> purgeExpiredTrash(Request request) async {
     final device = _device(request);
     final orphans = await _purgeExpired();
-    vault.auditAction(
+    vault.mutated(
       deviceId: device.id,
       action: 'trash.purge.manual',
       detail: '${orphans.length} blob(s)',
@@ -742,7 +757,7 @@ class ApiHandlers {
   Future<Response> restore(Request request, String id) async {
     final device = _device(request);
     final restored = vault.files.restore(id);
-    vault.auditAction(
+    vault.mutated(
       deviceId: device.id,
       action: 'file.restore',
       targetId: id,
@@ -760,7 +775,7 @@ class ApiHandlers {
     final orphans = vault.files.permanentDelete(id, vault.blobs);
     await vault.deleteOrphanedBlobs(orphans);
     vault.versions.deleteForFile(id);
-    vault.auditAction(
+    vault.mutated(
       deviceId: device.id,
       action: 'file.destroy',
       targetId: id,
@@ -773,7 +788,7 @@ class ApiHandlers {
     final device = _device(request);
     final orphans = vault.files.emptyTrash(vault.blobs);
     await vault.deleteOrphanedBlobs(orphans);
-    vault.auditAction(deviceId: device.id, action: 'trash.empty');
+    vault.mutated(deviceId: device.id, action: 'trash.empty');
     return ApiResponses.ok();
   }
 
@@ -795,10 +810,207 @@ class ApiHandlers {
     });
   }
 
-  Future<Response> revokeDevice(Request request, String id) async {
+  Future<Response> createApiToken(Request request) async {
     final device = _device(request);
+    final body = await _jsonBody(request);
+    final name =
+        FileNames.sanitize(body['name']?.toString().trim() ?? 'API token');
+    final days = (body['days'] as num?)?.toInt() ?? 365;
+    if (days < 1 || days > 3650) {
+      return ApiResponses.validation('days must be 1..3650.');
+    }
+    final lifetime = Duration(days: days);
+    final created = tokens.createDevice(
+      deviceId: const Uuid().v4(),
+      deviceName: 'token: $name',
+      accessLifetime: lifetime,
+      refreshLifetime: lifetime,
+    );
+    vault.mutated(
+      deviceId: device.id,
+      action: 'device.token.create',
+      targetId: created.deviceId,
+      targetName: name,
+      detail: '${days}d',
+    );
+    // Plaintext is returned exactly once — the client must store it.
+    return ApiResponses.created({
+      'device': deviceToJson(vault.devices.getById(created.deviceId)),
+      'accessToken': created.accessToken,
+      'refreshToken': created.refreshToken,
+      'expiresInDays': days,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Share links
+  // ---------------------------------------------------------------------------
+
+  /// Short-lived tickets granting content access to password-protected shares.
+  final Map<String, ({String fileId, String tokenHash, DateTime expiresAt})>
+      _shareTickets = {};
+
+  Future<Response> createShare(Request request) async {
+    final device = _device(request);
+    final body = await _jsonBody(request);
+    final fileId = body['fileId']?.toString() ?? '';
+    final file = vault.files.getById(fileId);
+    if (file.isTrashed) {
+      throw const ValidationException('Trashed items cannot be shared.');
+    }
+    if (file.isFolder) {
+      return ApiResponses.validation('Only files can be shared for now.');
+    }
+    final hours = (body['expiresInHours'] as num?)?.toDouble();
+    if (hours != null && (hours <= 0 || hours > 24 * 365)) {
+      return ApiResponses.validation('expiresInHours must be 0..8760.');
+    }
+    final password = body['password']?.toString() ?? '';
+    if (password.isNotEmpty && password.length < 4) {
+      return ApiResponses.validation(
+          'Share password must be at least 4 characters.');
+    }
+    final created = await vault.shares.create(
+      fileId: file.id,
+      fileName: file.name,
+      expiresIn: hours == null ? null : Duration(minutes: (hours * 60).round()),
+      password: password.isEmpty ? null : password,
+    );
+    vault.mutated(
+      deviceId: device.id,
+      action: 'share.create',
+      targetId: file.id,
+      targetName: file.name,
+    );
+    return ApiResponses.created({
+      'token': created.token,
+      'item': shareToJson(created.link),
+    });
+  }
+
+  Future<Response> listShares(Request request) async {
+    // Drop links whose files are gone.
+    vault.database.raw.execute(
+      'DELETE FROM shares WHERE file_id NOT IN (SELECT id FROM files)',
+    );    final names = <String, String>{};
+    for (final row in vault.database.raw.select(
+        'SELECT id, name FROM files')) {
+      names[row['id'] as String] = row['name'] as String;
+    }
+    final items = vault.shares.listAll(names);
+    return ApiResponses.ok({'items': items.map(shareToJson).toList()});
+  }
+
+  Future<Response> deleteShare(Request request, String prefix) async {
+    final device = _device(request);
+    vault.shares.deleteByPrefix(prefix);
+    vault.mutated(
+      deviceId: device.id,
+      action: 'share.revoke',
+      detail: prefix,
+    );
+    return ApiResponses.ok();
+  }
+
+  /// Public metadata. Password shares return 401 with hasPassword=true.
+  Future<Response> shareInfo(Request request, String token) async {
+    late final dynamic row;
+    try {
+      row = vault.shares.resolve(token);
+    } catch (_) {
+      throw const NotFoundException('Share not found or expired.');
+    }
+    final file = vault.files.getById(row['file_id'] as String);
+    if (file.isTrashed || file.isFolder || file.blobId == null) {
+      throw const NotFoundException('Shared file is unavailable.');
+    }
+    final locked = (row['password_hash'] as String?) != null;
+    if (locked) {
+      return ApiResponses.unauthorized('Password required.');
+    }
+    final expiresAt = row['expires_at'] as int?;
+    return ApiResponses.ok({
+      'name': file.name,
+      'size': file.size,
+      'mime': file.mime,
+      'hasPassword': false,
+      'expiresAt': expiresAt == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(expiresAt)
+              .toIso8601String(),
+    });
+  }
+
+  /// Public unlock for password shares → short-lived content ticket.
+  Future<Response> shareUnlock(Request request, String token) async {
+    late final dynamic row;
+    try {
+      row = vault.shares.resolve(token);
+    } catch (_) {
+      throw const NotFoundException('Share not found or expired.');
+    }
+    final ok = await vault.shares
+        .verifyPassword(row, (await _jsonBody(request))['password']?.toString() ?? '');
+    if (!ok) return ApiResponses.unauthorized('Wrong password.');
+    final ticket = Cipher.randomHex(16);
+    _shareTickets[ticket] = (
+      fileId: row['file_id'] as String,
+      tokenHash: row['token_hash'] as String,
+      expiresAt: DateTime.now().add(const Duration(minutes: 5)),
+    );
+    return ApiResponses.ok({'ticket': ticket, 'expiresInSeconds': 300});
+  }
+
+  /// Public content download (Range-capable). Ticket required iff locked.
+  Future<Response> shareContent(Request request, String token) async {
+    late final dynamic row;
+    try {
+      row = vault.shares.resolve(token);
+    } catch (_) {
+      throw const NotFoundException('Share not found or expired.');
+    }
+    if ((row['password_hash'] as String?) != null) {
+      final ticket = request.url.queryParameters['ticket'] ?? '';
+      final grant = _shareTickets[ticket];
+      if (grant == null ||
+          grant.expiresAt.isBefore(DateTime.now()) ||
+          grant.fileId != (row['file_id'] as String)) {
+        return ApiResponses.unauthorized('Valid ticket required.');
+      }
+    }
+    final file = vault.files.getById(row['file_id'] as String);
+    if (file.isTrashed || file.isFolder || file.blobId == null) {
+      throw const NotFoundException('Shared file is unavailable.');
+    }
+    final blob = vault.blobs.getById(file.blobId!);
+    final diskFile = vault.blobFile(blob);
+    if (!await diskFile.exists()) {
+      throw const StorageException('File bytes are missing on disk.');
+    }
+    vault.shares.recordDownload(row['token_hash'] as String);
+    vault.mutated(
+      action: 'share.download',
+      targetId: file.id,
+      targetName: file.name,
+    );
+    final length = await diskFile.length();
+    return _rangedResponse(
+        diskFile, length, file.mime, file.name, request.headers['range']);
+  }
+
+  Future<Response> revokeDevice(Request request, String id) async {    final device = _device(request);
+    // The host's own device entry can only be revoked by itself (logout).
+    // Otherwise any authenticated device could silently kick the owner.
+    try {
+      final target = vault.devices.getById(id);
+      if (target.isCurrent && target.id != device.id) {
+        return ApiResponses.forbidden('Cannot revoke the host device.');
+      }
+    } catch (_) {
+      return ApiResponses.notFound('Device not found.');
+    }
     vault.devices.revoke(id);
-    vault.auditAction(
+    vault.mutated(
       deviceId: device.id,
       action: 'device.revoke',
       targetId: id,
@@ -894,7 +1106,10 @@ Handler buildApiHandler({
     ..post('/api/v1/setup', handlers.setup)
     ..post('/api/v1/auth/login', handlers.login)
     ..post('/api/v1/auth/refresh', handlers.refresh)
-    ..post('/api/v1/pair', handlers.pair);
+    ..post('/api/v1/pair', handlers.pair)
+    ..get('/s/<token>', handlers.shareInfo)
+    ..post('/s/<token>/unlock', handlers.shareUnlock)
+    ..get('/s/<token>/content', handlers.shareContent);
 
   final protectedRouter = Router()
     ..post('/api/v1/auth/logout', handlers.logout)
@@ -923,11 +1138,16 @@ Handler buildApiHandler({
     ..post('/api/v1/trash/purge-expired', handlers.purgeExpiredTrash)
     ..get('/api/v1/storage/status', handlers.storageStatus)
     ..get('/api/v1/storage/breakdown', handlers.storageBreakdown)
+    ..get('/api/v1/sync/version', handlers.syncVersion)
     ..get('/api/v1/activity', handlers.activity)
     ..get('/api/v1/settings', handlers.getSettings)
     ..put('/api/v1/settings', handlers.updateSettings)
     ..get('/api/v1/devices', handlers.devices)
-    ..post('/api/v1/devices/<id>/revoke', handlers.revokeDevice);
+    ..post('/api/v1/devices/token', handlers.createApiToken)
+    ..post('/api/v1/devices/<id>/revoke', handlers.revokeDevice)
+    ..post('/api/v1/shares', handlers.createShare)
+    ..get('/api/v1/shares', handlers.listShares)
+    ..delete('/api/v1/shares/<prefix>', handlers.deleteShare);
 
   final publicPipeline =
       const Pipeline().addMiddleware(errorHandler()).addHandler(publicRouter.call);

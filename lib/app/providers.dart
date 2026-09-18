@@ -8,14 +8,15 @@ import '../client/services/file_service.dart';
 import '../client/services/transfer_manager.dart';
 import '../data/datasources/vault.dart';
 import '../data/models/storage_status.dart';
-import '../server/server.dart';
 
 // ---------------------------------------------------------------------------
 // Host dashboard data
 // ---------------------------------------------------------------------------
 
 class HostDashboardData {
-  final LocalVaultServer server;
+  /// [server] is a [HostRunner] (background-isolate node). Typed dynamic so
+  /// the dashboard stays decoupled from the runner implementation.
+  final dynamic server;
   final Vault vault;
   const HostDashboardData({required this.server, required this.vault});
 }

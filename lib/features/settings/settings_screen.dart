@@ -77,6 +77,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           const _BackupSection(),
           _SettingsSection(
+            title: 'Sharing',
+            children: [
+              _SettingsTile(
+                icon: Icons.link_rounded,
+                title: 'Shared links',
+                subtitle: 'Manage expiring file links',
+                onTap: () => context.push('/client/sharing'),
+              ),
+            ],
+          ),
+          _SettingsSection(
             title: 'Account',
             children: [
               _SettingsTile(

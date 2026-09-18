@@ -139,6 +139,20 @@ class VaultDatabase {
     _db.execute('''
       CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC);
     ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS shares (
+        token_hash     TEXT PRIMARY KEY,
+        token_prefix   TEXT NOT NULL,
+        file_id        TEXT NOT NULL,
+        password_hash  TEXT,
+        expires_at     INTEGER,
+        download_count INTEGER NOT NULL DEFAULT 0,
+        created_at     INTEGER NOT NULL
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_shares_file ON shares(file_id);
+    ''');
 
     // Additive column migrations for pre-existing vaults.
     _ensureColumn('files', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
