@@ -7,6 +7,7 @@ A cross-platform local cloud storage application that turns local storage (exter
 ## 📱 Download
 
 - **Android APK (v1.1.0)**: [GitHub Releases → LocalVault v1.1.0](https://github.com/kusal630/local-cloud-storage/releases/tag/v1.1.0)
+  (`localvault-v1.1.0.apk`, 82.9 MB, SHA-256 `ab211fd3…18e0`; also mirrored at [`dist/localvault-v1.1.0.apk`](dist/localvault-v1.1.0.apk))
 - Install: download → open the file → allow “Install unknown apps” → install.
 
 ## ☁️ Your phone as an always-on cloud (v1.1.0)
