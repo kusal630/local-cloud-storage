@@ -18,6 +18,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _hasPin = false;
   bool _bioOn = false;
   bool _bioSupported = false;
+  int _autoLock = 2;
 
   @override
   void initState() {
@@ -29,6 +30,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final store = PinStore();
     final has = await store.hasPin;
     final bio = await store.biometricEnabled;
+    final lock = await store.autoLockMinutes;
     bool supported = false;
     try {
       supported = await LocalAuthentication().isDeviceSupported();
@@ -38,6 +40,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _hasPin = has;
       _bioOn = bio;
       _bioSupported = supported;
+      _autoLock = lock;
     });
   }
 
@@ -107,6 +110,48 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   value: _bioOn && _hasPin,
                   onChanged: _toggleBio,
                 ),
+              if (_hasPin) ...[
+                ListTile(
+                  leading: const Icon(Icons.timer_rounded),
+                  title: const Text('Auto-lock'),
+                  subtitle: Text(_autoLock <= 0
+                      ? 'Only on restart'
+                      : 'After $_autoLock min in background'),
+                  trailing: DropdownButton<int>(
+                    value: _autoLock,
+                    items: const [
+                      DropdownMenuItem(
+                          value: 0, child: Text('Restart')),
+                      DropdownMenuItem(
+                          value: 1, child: Text('1 min')),
+                      DropdownMenuItem(
+                          value: 2, child: Text('2 min')),
+                      DropdownMenuItem(
+                          value: 5, child: Text('5 min')),
+                      DropdownMenuItem(
+                          value: 15, child: Text('15 min')),
+                    ],
+                    onChanged: (v) async {
+                      if (v == null) return;
+                      await PinStore().setAutoLockMinutes(v);
+                      _refreshPin();
+                    },
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.lock_rounded),
+                  title: const Text('Lock now'),
+                  onTap: () => ref
+                      .read(lockNowProvider.notifier)
+                      .state++,
+                ),
+              ],
+              _SettingsTile(
+                icon: Icons.privacy_tip_rounded,
+                title: 'Privacy center',
+                subtitle: 'See and delete on-device data',
+                onTap: () => context.push('/client/privacy'),
+              ),
             ],
           ),
           const _BackupSection(),
@@ -344,6 +389,15 @@ class _BackupSection extends ConsumerWidget {
           value: backup.enabled,
           onChanged: (v) =>
               ref.read(backupServiceProvider).setEnabled(v),
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.date_range_rounded),
+          title: const Text('Organize by month'),
+          subtitle: const Text('Uploads land in YYYY-MM folders'),
+          value: backup.organizeByMonth,
+          onChanged: (v) => ref
+              .read(backupServiceProvider)
+              .setOrganizeByMonth(v),
         ),
         for (final src in backup.sources)
           ListTile(

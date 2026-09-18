@@ -662,6 +662,75 @@ class FileRepository {
     return getById(id);
   }
 
+  /// Deep-copies [id] (files share blobs; folders recurse) into
+  /// [targetParentId]. Names auto-resolve conflicts.
+  VaultFile copyItem(String id, String targetParentId) {
+    final entry = getById(id);
+    if (entry.id == AppConstants.rootFolderId) {
+      throw const ValidationException('The root folder cannot be copied.');
+    }
+    if (entry.isTrashed) {
+      throw const ValidationException('Trashed items cannot be copied.');
+    }
+    requireFolder(targetParentId);
+    if (entry.isFolder) {
+      if (targetParentId == id ||
+          _ancestorIds(targetParentId).contains(id)) {
+        throw const ValidationException(
+            'Cannot copy a folder into itself or its sub-folders.');
+      }
+    }
+    return _db.withTransaction(() => _copyInto(entry, targetParentId));
+  }
+
+  VaultFile _copyInto(VaultFile entry, String parentId) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final newId = _newId();
+    if (!entry.isFolder) {
+      _db.raw.execute(
+        '''
+        INSERT INTO files
+          (id, parent_id, name, type, mime, size, blob_id, checksum,
+           has_thumb, is_favorite, tags, created_at, modified_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+        ''',
+        [
+          newId,
+          parentId,
+          uniqueName(parentId, entry.name),
+          typeFile,
+          entry.mime,
+          entry.size,
+          entry.blobId,
+          entry.checksum,
+          entry.tags.join(','),
+          now,
+          now,
+        ],
+      );
+      return getById(newId);
+    }
+    _db.raw.execute(
+      '''
+      INSERT INTO files (id, parent_id, name, type, size, tags, created_at, modified_at)
+      VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+      ''',
+      [
+        newId,
+        parentId,
+        uniqueName(parentId, entry.name),
+        typeFolder,
+        entry.tags.join(','),
+        now,
+        now,
+      ],
+    );
+    for (final child in listChildren(entry.id, includeTrashed: false)) {
+      _copyInto(child, newId);
+    }
+    return getById(newId);
+  }
+
   String _newId() {
     var id = '';
     var guard = 0;

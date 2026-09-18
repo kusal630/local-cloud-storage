@@ -43,10 +43,12 @@ class HostSettings {
     required this.trashRetentionDays,
     required this.deviceQuotaBytes,
     required this.tlsConfigured,
+    required this.shareDefaultExpiryHours,
   });
   final int trashRetentionDays;
   final int deviceQuotaBytes;
   final bool tlsConfigured;
+  final int shareDefaultExpiryHours;
 }
 
 class UploadStartResponse {
@@ -117,6 +119,17 @@ class FileService {
     try {
       final response =
           await _dio.patch('/files/$id', data: {'parentId': newParentId});
+      final data = LocalVaultApi.decodeData(response);
+      return _parseFile(data['item'] as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<VaultFile> copyFile(String id, {String? parentId}) async {
+    try {
+      final response = await _dio.post('/files/$id/copy',
+          data: {if (parentId != null) 'parentId': parentId});
       final data = LocalVaultApi.decodeData(response);
       return _parseFile(data['item'] as Map<String, dynamic>);
     } on DioException catch (e) {
@@ -364,15 +377,19 @@ class FileService {
     }
   }
 
+  HostSettings _parseSettings(Map<String, dynamic> data) => HostSettings(
+        trashRetentionDays: (data['trashRetentionDays'] as num).toInt(),
+        deviceQuotaBytes: (data['deviceQuotaBytes'] as num).toInt(),
+        tlsConfigured: data['tlsConfigured'] as bool? ?? false,
+        shareDefaultExpiryHours:
+            (data['shareDefaultExpiryHours'] as num?)?.toInt() ?? 168,
+      );
+
   Future<HostSettings> getSettings() async {
     try {
       final response = await _dio.get('/settings');
       final data = LocalVaultApi.decodeData(response);
-      return HostSettings(
-        trashRetentionDays: (data['trashRetentionDays'] as num).toInt(),
-        deviceQuotaBytes: (data['deviceQuotaBytes'] as num).toInt(),
-        tlsConfigured: data['tlsConfigured'] as bool? ?? false,
-      );
+      return _parseSettings(data);
     } on DioException catch (e) {
       throw LocalVaultApi.mapError(e);
     }
@@ -395,11 +412,7 @@ class FileService {
         if (tlsKeyPath != null) 'tlsKeyPath': tlsKeyPath,
       });
       final data = LocalVaultApi.decodeData(response);
-      return HostSettings(
-        trashRetentionDays: (data['trashRetentionDays'] as num).toInt(),
-        deviceQuotaBytes: (data['deviceQuotaBytes'] as num).toInt(),
-        tlsConfigured: data['tlsConfigured'] as bool? ?? false,
-      );
+      return _parseSettings(data);
     } on DioException catch (e) {
       throw LocalVaultApi.mapError(e);
     }
@@ -429,12 +442,14 @@ class FileService {
     required String fileId,
     double? expiresInHours,
     String? password,
+    int? maxDownloads,
   }) async {
     try {
       final response = await _dio.post('/shares', data: {
         'fileId': fileId,
         if (expiresInHours != null) 'expiresInHours': expiresInHours,
         if (password != null && password.isNotEmpty) 'password': password,
+        if (maxDownloads != null) 'maxDownloads': maxDownloads,
       });
       final data = LocalVaultApi.decodeData(response);
       return (
@@ -450,6 +465,7 @@ class FileService {
     required String targetFolderId,
     double? expiresInHours,
     String? password,
+    int? maxDownloads,
   }) async {
     try {
       final response = await _dio.post('/shares', data: {
@@ -457,6 +473,7 @@ class FileService {
         'targetFolderId': targetFolderId,
         if (expiresInHours != null) 'expiresInHours': expiresInHours,
         if (password != null && password.isNotEmpty) 'password': password,
+        if (maxDownloads != null) 'maxDownloads': maxDownloads,
       });
       final data = LocalVaultApi.decodeData(response);
       return (
@@ -841,6 +858,7 @@ class FileService {
         createdAt: DateTime.parse(m['createdAt'] as String),
         downloadCount: (m['downloadCount'] as num?)?.toInt() ?? 0,
         mode: m['mode'] as String? ?? 'download',
+        maxDownloads: (m['maxDownloads'] as num?)?.toInt(),
       );
 
   static FileComment _parseComment(Map<String, dynamic> m) => FileComment(

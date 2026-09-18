@@ -60,6 +60,36 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                       child: ListView(
                         padding: const EdgeInsets.all(16),
                         children: [
+                          if (_status!.usedFraction >= 0.9)
+                            Card(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .errorContainer
+                                  .withValues(alpha: 0.7),
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.warning_rounded,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onErrorContainer),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Text(
+                                        'Storage is ${(_status!.usedFraction * 100).round()}% full. Free space or grow the quota before uploads start failing.',
+                                        style: TextStyle(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .onErrorContainer),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          if (_status!.usedFraction >= 0.9)
+                            const SizedBox(height: 16),
                           // Overview card
                           Card(
                             child: Padding(

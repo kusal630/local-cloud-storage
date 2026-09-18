@@ -94,3 +94,6 @@ final storageStatusProvider =
     );
   }
 });
+
+/// Increment to lock the app immediately (Settings → Lock now).
+final lockNowProvider = StateProvider<int>((_) => 0);

@@ -19,21 +19,50 @@ class LocalVaultApp extends ConsumerStatefulWidget {
   ConsumerState<LocalVaultApp> createState() => _LocalVaultAppState();
 }
 
-class _LocalVaultAppState extends ConsumerState<LocalVaultApp> {
+class _LocalVaultAppState extends ConsumerState<LocalVaultApp>
+    with WidgetsBindingObserver {
   bool? _locked;
   StreamSubscription<List<SharedMediaFile>>? _sharedSub;
+  DateTime? _pausedAt;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkLock();
     _initSharedIntent();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sharedSub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _pausedAt = DateTime.now();
+    } else if (state == AppLifecycleState.resumed) {
+      _maybeAutoLock();
+    }
+  }
+
+  /// Relocks after the configured background timeout (privacy by default).
+  Future<void> _maybeAutoLock() async {
+    try {
+      if (_locked != false) return;
+      if (!await PinStore().hasPin) return;
+      final minutes = await PinStore().autoLockMinutes;
+      if (minutes <= 0 || _pausedAt == null) return;
+      if (DateTime.now().difference(_pausedAt!) >=
+          Duration(minutes: minutes)) {
+        if (!mounted) return;
+        setState(() => _locked = true);
+      }
+    } catch (_) {}
   }
 
   /// Files/text shared from other apps (Android share sheet) are queued
@@ -108,6 +137,10 @@ class _LocalVaultAppState extends ConsumerState<LocalVaultApp> {
 
   @override
   Widget build(BuildContext context) {
+    // Immediate lock requests (Settings → Lock now).
+    ref.listen<int>(lockNowProvider, (previous, next) {
+      if (_locked == false) setState(() => _locked = true);
+    });
     if (_locked == null) {
       return MaterialApp(
         theme: lightTheme,

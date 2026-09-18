@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localvault/app/providers.dart';
@@ -42,7 +43,6 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
       );
     }
     final server = data.server;
-    final vault = data.vault;
 
     return Scaffold(
       appBar: AppBar(
@@ -67,7 +67,19 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
           constraints: const BoxConstraints(maxWidth: 640),
           child: ListView(
             padding: const EdgeInsets.all(16),
-            children: [
+              children: _staggered(
+                  context, _dashboardCards(context, ref, data)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _dashboardCards(
+      BuildContext context, WidgetRef ref, dynamic data) {
+    final server = data.server;
+    final vault = data.vault;
+    return [
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(20),
@@ -83,9 +95,10 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                                 : Theme.of(context).colorScheme.error,
                           ),
                           const SizedBox(width: 8),
-                          const StatusPill(
-                            label: 'LAN-ONLY :8484',
-                            color: Color(0xFF0E7C7B),
+                          StatusPill(
+                            label:
+                                '${(server.scheme as String?) ?? 'https'} :${server.port}',
+                            color: const Color(0xFF0E7C7B),
                           ),
                         ],
                       ),
@@ -190,12 +203,25 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                   ),
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
-    );
+            ];
   }
+
+  /// Staggers cards in with a soft rise (fluid without noise).
+  List<Widget> _staggered(BuildContext context, List<Widget> cards) => [
+        for (var i = 0; i < cards.length; i++)
+          Padding(
+            padding: EdgeInsets.only(bottom: i == cards.length - 1 ? 0 : 12),
+            child: cards[i]
+                .animate()
+                .fadeIn(delay: (i * 60).ms, duration: 300.ms)
+                .slideY(
+                    begin: 0.08,
+                    end: 0,
+                    delay: (i * 60).ms,
+                    duration: 300.ms,
+                    curve: Curves.easeOut),
+          ),
+      ];
 }
 
 class _ServerUrls extends StatelessWidget {
@@ -492,6 +518,7 @@ class _HostSettings extends StatefulWidget {
 class _HostSettingsState extends State<_HostSettings> {
   late final TextEditingController _retention;
   late final TextEditingController _quotaGb;
+  late final TextEditingController _shareExpiry;
   late final TextEditingController _cert;
   late final TextEditingController _key;
   String? _saved;
@@ -505,6 +532,8 @@ class _HostSettingsState extends State<_HostSettings> {
     final quota = settings.deviceQuotaBytes as int;
     _quotaGb = TextEditingController(
         text: quota <= 0 ? '' : (quota / 1073741824).toStringAsFixed(1));
+    _shareExpiry = TextEditingController(
+        text: '${settings.shareDefaultExpiryHours}');
     _cert =
         TextEditingController(text: '${settings.tlsCertPath ?? ''}');
     _key = TextEditingController(text: '${settings.tlsKeyPath ?? ''}');
@@ -514,6 +543,7 @@ class _HostSettingsState extends State<_HostSettings> {
   void dispose() {
     _retention.dispose();
     _quotaGb.dispose();
+    _shareExpiry.dispose();
     _cert.dispose();
     _key.dispose();
     super.dispose();
@@ -536,6 +566,12 @@ class _HostSettingsState extends State<_HostSettings> {
       }
       widget.vault.settings.trashRetentionDays = days;
       widget.vault.settings.deviceQuotaBytes = quotaBytes;
+      final expiry = int.tryParse(_shareExpiry.text.trim()) ?? -1;
+      if (expiry < 0 || expiry > 8760) {
+        setState(() => _saved = 'Share expiry must be 0..8760 hours.');
+        return;
+      }
+      widget.vault.settings.shareDefaultExpiryHours = expiry;
       final cert = _cert.text.trim();
       final key = _key.text.trim();
       if (cert.isEmpty && key.isEmpty) {
@@ -584,6 +620,15 @@ class _HostSettingsState extends State<_HostSettings> {
           decoration: const InputDecoration(
             labelText: 'Vault quota (GB, empty = unlimited)',
             prefixIcon: Icon(Icons.pie_chart_rounded),
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _shareExpiry,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Default share-link expiry (hours, 0 = never)',
+            prefixIcon: Icon(Icons.link_rounded),
           ),
         ),
         const SizedBox(height: 8),

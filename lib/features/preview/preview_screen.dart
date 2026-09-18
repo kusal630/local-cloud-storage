@@ -1,11 +1,17 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'dart:async';
 import 'package:image/image.dart' as img;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:pdfx/pdfx.dart';
+import 'package:video_player/video_player.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/file_service.dart';
 import 'package:localvault/data/models/audit_entry.dart';
@@ -75,6 +81,12 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
     }
     final file = _file!;
     final isImage = file.mime?.startsWith('image/') == true;
+    final isPdf = file.mime == 'application/pdf' ||
+        file.name.toLowerCase().endsWith('.pdf');
+    final isVideo =
+        file.mime?.startsWith('video/') == true;
+    final isAudio =
+        file.mime?.startsWith('audio/') == true;
 
     return Scaffold(
       appBar: AppBar(
@@ -115,7 +127,13 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
       ),
       body: isImage
           ? _PreviewImage(file: file)
-          : _PreviewMetadata(file: file),
+          : isPdf
+              ? _PreviewPdf(file: file)
+              : isVideo
+                  ? _PreviewVideo(file: file)
+                  : isAudio
+                      ? _PreviewAudio(file: file)
+                      : _PreviewMetadata(file: file),
     );
   }
 
@@ -245,8 +263,11 @@ class _PreviewImageState extends ConsumerState<_PreviewImage> {
           ),
         Expanded(
           child: InteractiveViewer(
-            child:
-                Center(child: Image.memory(_bytes!, fit: BoxFit.contain)),
+            child: Center(
+                child: Hero(
+              tag: 'thumb-${widget.file.id}',
+              child: Image.memory(_bytes!, fit: BoxFit.contain),
+            )),
           ),
         ),
       ],
@@ -261,6 +282,318 @@ String? _imageDims(List<int> bytes) {
     return '${decoded.width}×${decoded.height}';
   } catch (_) {
     return null;
+  }
+}
+
+/// PDF preview (downloaded over trusted TLS, rendered locally).
+/// Falls back to metadata for huge files or unsupported platforms.
+class _PreviewPdf extends ConsumerStatefulWidget {
+  final VaultFile file;
+  const _PreviewPdf({required this.file});
+  @override
+  ConsumerState<_PreviewPdf> createState() => _PreviewPdfState();
+}
+
+class _PreviewPdfState extends ConsumerState<_PreviewPdf> {
+  static const int maxBytes = 50 * 1024 * 1024;
+  PdfController? _controller;
+  String? _error;
+  int _pages = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (widget.file.size > maxBytes) {
+      if (!mounted) return;
+      setState(() => _error = 'too-large');
+      return;
+    }
+    try {
+      final bytes =
+          await ref.read(fileServiceProvider).downloadBytes(widget.file.id);
+      final doc = await PdfDocument.openData(Uint8List.fromList(bytes));
+      if (!mounted) return;
+      setState(() {
+        _controller = PdfController(document: Future.value(doc));
+        _pages = doc.pagesCount;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return _PreviewMetadata(file: widget.file);
+    }
+    final controller = _controller;
+    if (controller == null) {
+      return const LoadingIndicator(message: 'Loading PDF…');
+    }
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: StatusPill(
+              label: 'PDF • $_pages pages',
+              color: const Color(0xFFE53935)),
+        ),
+        Expanded(
+          child: PdfView(
+            controller: controller,
+            scrollDirection: Axis.vertical,
+            pageSnapping: false,
+            onDocumentError: (_) {
+              if (mounted) setState(() => _error = 'render');
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Video preview: fetched over the app's pinned TLS into a temp file, then
+/// played locally (platform players reject self-signed certs on streams).
+class _PreviewVideo extends ConsumerStatefulWidget {
+  final VaultFile file;
+  const _PreviewVideo({required this.file});
+  @override
+  ConsumerState<_PreviewVideo> createState() => _PreviewVideoState();
+}
+
+class _PreviewVideoState extends ConsumerState<_PreviewVideo> {
+  static const int maxBytes = 200 * 1024 * 1024;
+  VideoPlayerController? _controller;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (widget.file.size > maxBytes) {
+      if (!mounted) return;
+      setState(() => _error = 'too-large');
+      return;
+    }
+    try {
+      final bytes =
+          await ref.read(fileServiceProvider).downloadBytes(widget.file.id);
+      final dir = await getTemporaryDirectory();
+      final path = p.join(
+          dir.path, 'preview_${widget.file.id}_${widget.file.name}');
+      await File(path).writeAsBytes(bytes);
+      final controller = VideoPlayerController.file(File(path));
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() => _controller = controller);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return _PreviewMetadata(file: widget.file);
+    }
+    final controller = _controller;
+    if (controller == null) {
+      return const LoadingIndicator(message: 'Loading video…');
+    }
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AspectRatio(
+            aspectRatio: controller.value.aspectRatio == 0
+                ? 16 / 9
+                : controller.value.aspectRatio,
+            child: VideoPlayer(controller),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: () {
+              if (controller.value.isPlaying) {
+                controller.pause();
+              } else {
+                controller.play();
+              }
+              setState(() {});
+            },
+            icon: Icon(controller.value.isPlaying
+                ? Icons.pause_rounded
+                : Icons.play_arrow_rounded),
+            label: Text(
+                controller.value.isPlaying ? 'Pause' : 'Play'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Audio preview with seek bar (same trusted-download pattern as video).
+class _PreviewAudio extends ConsumerStatefulWidget {
+  final VaultFile file;
+  const _PreviewAudio({required this.file});
+  @override
+  ConsumerState<_PreviewAudio> createState() => _PreviewAudioState();
+}
+
+class _PreviewAudioState extends ConsumerState<_PreviewAudio> {
+  static const int maxBytes = 100 * 1024 * 1024;
+  final AudioPlayer _player = AudioPlayer();
+  String? _error;
+  bool _ready = false;
+  bool _playing = false;
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  StreamSubscription<Duration>? _posSub;
+  StreamSubscription<Duration>? _durSub;
+  StreamSubscription<void>? _doneSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _posSub = _player.onPositionChanged.listen((d) {
+      if (mounted) setState(() => _position = d);
+    });
+    _durSub = _player.onDurationChanged.listen((d) {
+      if (mounted) setState(() => _duration = d);
+    });
+    _doneSub = _player.onPlayerComplete.listen((_) {
+      if (mounted) setState(() => _playing = false);
+    });
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _posSub?.cancel();
+    _durSub?.cancel();
+    _doneSub?.cancel();
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (widget.file.size > maxBytes) {
+      if (!mounted) return;
+      setState(() => _error = 'too-large');
+      return;
+    }
+    try {
+      final bytes =
+          await ref.read(fileServiceProvider).downloadBytes(widget.file.id);
+      final dir = await getTemporaryDirectory();
+      final path = p.join(
+          dir.path, 'preview_${widget.file.id}_${widget.file.name}');
+      await File(path).writeAsBytes(bytes);
+      await _player.setSourceDeviceFile(path);
+      if (!mounted) return;
+      setState(() => _ready = true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '$e');
+    }
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '${d.inHours > 0 ? '${d.inHours}:' : ''}$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return _PreviewMetadata(file: widget.file);
+    }
+    if (!_ready) {
+      return const LoadingIndicator(message: 'Loading audio…');
+    }
+    final max = _duration.inMilliseconds.toDouble();
+    return Center(
+      child: Card(
+        margin: const EdgeInsets.all(24),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              VaultFileIcon(
+                  name: widget.file.name, size: 64),
+              const SizedBox(height: 12),
+              Text(widget.file.name,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  IconButton.filled(
+                    icon: Icon(_playing
+                        ? Icons.pause_rounded
+                        : Icons.play_arrow_rounded),
+                    onPressed: () async {
+                      if (_playing) {
+                        await _player.pause();
+                      } else {
+                        await _player.resume();
+                      }
+                      if (!mounted) return;
+                      setState(() => _playing = !_playing);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  Text(_fmt(_position),
+                      style: Theme.of(context).textTheme.bodySmall),
+                  Expanded(
+                    child: Slider(
+                      value: max <= 0
+                          ? 0
+                          : _position.inMilliseconds
+                              .toDouble()
+                              .clamp(0, max),
+                      max: max <= 0 ? 1 : max,
+                      onChanged: (v) => _player.seek(
+                          Duration(milliseconds: v.round())),
+                    ),
+                  ),
+                  Text(_fmt(_duration),
+                      style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

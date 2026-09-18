@@ -27,6 +27,15 @@ upload, download, share, and back up.
 - **Staggered version pruning** (hourly → daily → weekly, like Syncthing)
 - **Backup ignore patterns** (`*.tmp`, `Screenshots`) Syncthing-style
 
+## What you can do with it (v1.5.0 privacy + fluid wave)
+
+- **Copy anything** — files share bytes instantly, folders recurse safely
+- **Free up space** — offline pins pair with one-tap local cleanup (Files On-Demand style)
+- **Auto-organized backup** — optional `YYYY-MM` folders, camera-roll style
+- **Link policies** — default expiry + max-download caps, enforced server-side
+- **Privacy center** — auto-lock timer, Lock now, biometric unlock, one-tap wipe of on-device data
+- **Fluid motion** — staggered entrances, shimmer skeletons, Hero image transitions
+- **Rich previews** — PDF reader, video + audio playback (fetched over pinned TLS, played locally)
 ## What you can do with it
 
 | Use | How |

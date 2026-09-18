@@ -79,6 +79,7 @@ Map<String, Object?> shareToJson(SharedLink s) => {
       'createdAt': s.createdAt.toIso8601String(),
       'downloadCount': s.downloadCount,
       'mode': s.mode,
+      'maxDownloads': s.maxDownloads,
     };
 
 Map<String, Object?> commentToJson(FileComment c) => {
@@ -579,6 +580,25 @@ class ApiHandlers {
     return ApiResponses.ok({'item': fileToJson(entry)});
   }
 
+  Future<Response> copyItem(Request request, String id) async {
+    final device = _device(request);
+    final body = await _jsonBody(request);
+    final entry = vault.files.getById(id);
+    final parentId =
+        body['parentId']?.toString() ?? entry.parentId;
+    final copy = vault.files.copyItem(id, parentId);
+    if (!copy.isFolder) {
+      unawaited(vault.generateThumbnail(copy));
+    }
+    vault.mutated(
+      deviceId: device.id,
+      action: 'file.copy',
+      targetId: copy.id,
+      targetName: copy.name,
+    );
+    return ApiResponses.created({'item': fileToJson(copy)});
+  }
+
   Future<Response> delete(Request request, String id) async {
     final device = _device(request);
     String? name;
@@ -683,6 +703,8 @@ class ApiHandlers {
     return ApiResponses.ok({
       'trashRetentionDays': vault.settings.trashRetentionDays,
       'deviceQuotaBytes': vault.settings.deviceQuotaBytes,
+      'shareDefaultExpiryHours':
+          vault.settings.shareDefaultExpiryHours,
       'tlsConfigured':
           (vault.settings.tlsCertPath ?? '').isNotEmpty &&
               (vault.settings.tlsKeyPath ?? '').isNotEmpty,
@@ -707,6 +729,14 @@ class ApiHandlers {
       }
       vault.settings.deviceQuotaBytes = quota;
     }
+    if (body.containsKey('shareDefaultExpiryHours')) {
+      final hours = (body['shareDefaultExpiryHours'] as num?)?.toInt();
+      if (hours == null || hours < 0 || hours > 8760) {
+        return ApiResponses.validation(
+            'shareDefaultExpiryHours must be 0..8760.');
+      }
+      vault.settings.shareDefaultExpiryHours = hours;
+    }
     if (body.containsKey('tlsCertPath') || body.containsKey('tlsKeyPath')) {
       final cert = body['tlsCertPath']?.toString() ?? '';
       final key = body['tlsKeyPath']?.toString() ?? '';
@@ -727,6 +757,8 @@ class ApiHandlers {
     return ApiResponses.ok({
       'trashRetentionDays': vault.settings.trashRetentionDays,
       'deviceQuotaBytes': vault.settings.deviceQuotaBytes,
+      'shareDefaultExpiryHours':
+          vault.settings.shareDefaultExpiryHours,
       'tlsConfigured':
           (vault.settings.tlsCertPath ?? '').isNotEmpty &&
               (vault.settings.tlsKeyPath ?? '').isNotEmpty,
@@ -1094,7 +1126,7 @@ class ApiHandlers {
     final device = _device(request);
     final body = await _jsonBody(request);
     final mode = body['mode']?.toString() ?? 'download';
-    final hours = (body['expiresInHours'] as num?)?.toDouble();
+    var hours = (body['expiresInHours'] as num?)?.toDouble();
     if (hours != null && (hours <= 0 || hours > 24 * 365)) {
       return ApiResponses.validation('expiresInHours must be 0..8760.');
     }
@@ -1102,6 +1134,16 @@ class ApiHandlers {
     if (password.isNotEmpty && password.length < 4) {
       return ApiResponses.validation(
           'Share password must be at least 4 characters.');
+    }
+    // Host default policy applies when the client doesn't choose.
+    if (hours == null) {
+      final def = vault.settings.shareDefaultExpiryHours;
+      hours = def <= 0 ? null : def.toDouble();
+    }
+    final maxDownloads = (body['maxDownloads'] as num?)?.toInt();
+    if (maxDownloads != null &&
+        (maxDownloads < 1 || maxDownloads > 10000)) {
+      return ApiResponses.validation('maxDownloads must be 1..10000.');
     }
     final expiresIn = hours == null
         ? null
@@ -1119,6 +1161,7 @@ class ApiHandlers {
         targetFolderId: folderId,
         expiresIn: expiresIn,
         password: password.isEmpty ? null : password,
+        maxDownloads: maxDownloads,
       );
       vault.mutated(
         deviceId: device.id,
@@ -1145,6 +1188,7 @@ class ApiHandlers {
       fileName: file.name,
       expiresIn: expiresIn,
       password: password.isEmpty ? null : password,
+      maxDownloads: maxDownloads,
     );
     vault.mutated(
       deviceId: device.id,
@@ -1159,9 +1203,9 @@ class ApiHandlers {
   }
 
   Future<Response> listShares(Request request) async {
-    // Drop links whose files are gone.
+    // Drop links whose files are gone (upload-requests use '' and survive).
     vault.database.raw.execute(
-      'DELETE FROM shares WHERE file_id NOT IN (SELECT id FROM files)',
+      "DELETE FROM shares WHERE file_id NOT IN (SELECT id FROM files) AND file_id != ''",
     );    final names = <String, String>{};
     for (final row in vault.database.raw.select(
         'SELECT id, name FROM files')) {
@@ -1503,6 +1547,7 @@ Handler buildApiHandler({
     ..get('/api/v1/tags', handlers.listTags)
     ..get('/api/v1/files/by-tag', handlers.listByTag)
     ..patch('/api/v1/files/<id>', handlers.update)
+    ..post('/api/v1/files/<id>/copy', handlers.copyItem)
     ..delete('/api/v1/files/<id>', handlers.delete)
     ..get('/api/v1/search', handlers.search)
     ..get('/api/v1/trash', handlers.listTrash)

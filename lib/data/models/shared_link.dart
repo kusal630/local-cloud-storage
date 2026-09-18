@@ -11,6 +11,7 @@ class SharedLink extends Equatable {
     required this.createdAt,
     this.downloadCount = 0,
     this.mode = 'download',
+    this.maxDownloads,
   });
 
   /// First 12 chars of the token (the full token is never listed).
@@ -23,6 +24,7 @@ class SharedLink extends Equatable {
   final int downloadCount;
   /// `download` or `upload` (file request).
   final String mode;
+  final int? maxDownloads;
 
   bool get isUploadRequest => mode == 'upload';
 
@@ -36,5 +38,6 @@ class SharedLink extends Equatable {
         createdAt,
         downloadCount,
         mode,
+        maxDownloads,
       ];
 }

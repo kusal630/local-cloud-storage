@@ -29,6 +29,7 @@ class BackupService extends ChangeNotifier {
   static const _lastAddedKey = 'backup_last_added';
   static const _lastScannedKey = 'backup_last_scanned';
   static const _ignoresKey = 'backup_ignore_patterns';
+  static const _organizeKey = 'backup_organize_month';
 
   /// Files larger than this are skipped (500 MB).
   static const int maxFileBytes = 500 * 1024 * 1024;
@@ -43,6 +44,8 @@ class BackupService extends ChangeNotifier {
   int lastScanned = 0;
   /// Syncthing-style ignore substrings (`*` wildcard), comma-separated in UI.
   List<String> ignorePatterns = [];
+  /// When true, uploads land in `Auto Backup/<device>/2026-09` by file date.
+  bool organizeByMonth = true;
 
   /// Pure helper (unit-tested): true when [path] matches any ignore pattern.
   /// `*` acts as a wildcard; plain text matches as a substring.
@@ -87,6 +90,7 @@ class BackupService extends ChangeNotifier {
           .map((s) => s.trim())
           .where((s) => s.isNotEmpty)
           .toList();
+      organizeByMonth = prefs.getBool(_organizeKey) ?? true;
       final last = prefs.getString(_lastRunKey);
       lastRun = last == null ? null : DateTime.tryParse(last);
       lastAdded = prefs.getInt(_lastAddedKey) ?? 0;
@@ -130,6 +134,15 @@ class BackupService extends ChangeNotifier {
     } catch (_) {}
   }
 
+  Future<void> setOrganizeByMonth(bool value) async {
+    organizeByMonth = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_organizeKey, value);
+    } catch (_) {}
+  }
+
   Future<void> _saveSources() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -157,8 +170,11 @@ class BackupService extends ChangeNotifier {
             in dir.list(recursive: true, followLinks: false)) {
           if (entity is! File) continue;
           int size;
+          DateTime modified;
           try {
-            size = await entity.length();
+            final stat = await entity.stat();
+            size = stat.size;
+            modified = stat.modified;
           } catch (_) {
             continue;
           }
@@ -176,9 +192,15 @@ class BackupService extends ChangeNotifier {
           if (known.length > knownCap) {
             known.remove(known.first);
           }
+          var parentId = targetId;
+          if (organizeByMonth) {
+            final bucket =
+                '${modified.year}-${modified.month.toString().padLeft(2, '0')}';
+            parentId = await _ensureFolder(targetId, bucket);
+          }
           _transfers.enqueueUpload(
             sourcePath: entity.path,
-            parentId: targetId,
+            parentId: parentId,
             name: p.basename(entity.path),
           );
           lastAdded++;
@@ -206,10 +228,14 @@ class BackupService extends ChangeNotifier {
         : backup.first.id;
     final safeDevice =
         deviceName.trim().isEmpty ? 'device' : deviceName.trim();
-    final children = await _files.listFiles(backupId);
+    return _ensureFolder(backupId, safeDevice);
+  }
+
+  Future<String> _ensureFolder(String parentId, String name) async {
+    final children = await _files.listFiles(parentId);
     final match = children.where(
-        (f) => f.isFolder && f.name.toLowerCase() == safeDevice.toLowerCase());
+        (f) => f.isFolder && f.name.toLowerCase() == name.toLowerCase());
     if (match.isNotEmpty) return match.first.id;
-    return (await _files.createFolder(backupId, safeDevice)).id;
+    return (await _files.createFolder(parentId, name)).id;
   }
 }

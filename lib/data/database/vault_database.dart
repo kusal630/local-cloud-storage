@@ -174,8 +174,8 @@ class VaultDatabase {
     _ensureColumn('files', 'tags', "TEXT NOT NULL DEFAULT ''");
     _ensureColumn('upload_sessions', 'replace_file_id', 'TEXT');
     _ensureColumn('shares', 'mode', "TEXT NOT NULL DEFAULT 'download'");
-    _ensureColumn(
-        'shares', 'target_folder_id', 'TEXT');
+    _ensureColumn('shares', 'target_folder_id', 'TEXT');
+    _ensureColumn('shares', 'max_downloads', 'INTEGER');
 
     // Seed the virtual root folder.
     final roots = _db.select(

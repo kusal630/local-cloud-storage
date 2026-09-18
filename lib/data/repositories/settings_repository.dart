@@ -17,6 +17,8 @@ class SettingsRepository {
   static const String tlsCertPathKey = 'tls_cert_path';
   static const String tlsKeyPathKey = 'tls_key_path';
   static const String dataVersionKey = 'data_version';
+  static const String shareDefaultExpiryHoursKey =
+      'share_default_expiry_hours';
 
   String? get(String key) {
     final rows = _db.raw.select(
@@ -87,6 +89,16 @@ class SettingsRepository {
   }
 
   set deviceQuotaBytes(int value) => set(deviceQuotaBytesKey, '$value');
+
+  /// Default share-link lifetime in hours. 0 = never expires (default 168).
+  int get shareDefaultExpiryHours {
+    final raw = get(shareDefaultExpiryHoursKey);
+    if (raw == null) return 168;
+    return int.tryParse(raw) ?? 168;
+  }
+
+  set shareDefaultExpiryHours(int value) =>
+      set(shareDefaultExpiryHoursKey, '$value');
 
   String? get tlsCertPath => get(tlsCertPathKey);
   String? get tlsKeyPath => get(tlsKeyPathKey);

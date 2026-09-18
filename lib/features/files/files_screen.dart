@@ -74,12 +74,15 @@ class _GridThumbState extends ConsumerState<_GridThumb> {
     if (_bytes != null) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(10),
-        child: Image.memory(_bytes!,
-            width: 52, height: 52, fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) {
-          if (!_failed) setState(() => _failed = true);
-          return const SizedBox.shrink();
-        }),
+        child: Hero(
+          tag: 'thumb-${widget.fileId}',
+          child: Image.memory(_bytes!,
+              width: 52, height: 52, fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) {
+            if (!_failed) setState(() => _failed = true);
+            return const SizedBox.shrink();
+          }),
+        ),
       );
     }
     return const SizedBox(
@@ -571,8 +574,11 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                       ? Icons.cloud_off_rounded
                       : Icons.cloud_download_rounded),
                   title: Text(pinned
-                      ? 'Remove offline copy'
+                      ? 'Free up space'
                       : 'Save offline'),
+                  subtitle: pinned
+                      ? const Text('Removes the local copy; cloud keeps it')
+                      : null,
                   onTap: () {
                     Navigator.pop(ctx);
                     _toggleOffline(file, pinned);
@@ -585,6 +591,14 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
               onTap: () {
                 Navigator.pop(ctx);
                 _move(file);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.content_copy_rounded),
+              title: const Text('Copy to…'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _copyTo(file);
               },
             ),
             ListTile(
@@ -635,6 +649,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
 
   Future<void> _shareFile(VaultFile file) async {
     final passwordController = TextEditingController();
+    final maxController = TextEditingController();
     var expiryHours = 24.0;
     final create = await showDialog<bool>(
       context: context,
@@ -670,6 +685,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                   hintText: 'Min 4 characters',
                 ),
               ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: maxController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Max downloads (optional)',
+                  hintText: 'e.g. 5 — link dies after',
+                ),
+              ),
             ],
           ),
           actions: [
@@ -685,6 +709,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     );
     if (create != true || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
+    final maxDl = int.tryParse(maxController.text.trim());
     try {
       final result = await ref.read(fileServiceProvider).createShare(
             fileId: file.id,
@@ -692,6 +717,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
             password: passwordController.text.trim().isEmpty
                 ? null
                 : passwordController.text.trim(),
+            maxDownloads: maxDl,
           );
       final base = ref.read(apiClientProvider).serverUrl ?? '';
       final link = '$base/s/${result.token}';
@@ -996,6 +1022,29 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Star failed: $e')));
       }
+    }
+  }
+
+  Future<void> _copyTo(VaultFile file) async {
+    final folderId = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _FolderPickerDialog(
+        currentFolder: ref.read(currentFolderProvider),
+      ),
+    );
+    if (folderId == null || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final copy = await ref
+          .read(fileServiceProvider)
+          .copyFile(file.id, parentId: folderId);
+      HapticFeedback.lightImpact();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Copied as "${copy.name}"')),
+      );
+      _load();
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Copy failed: $e')));
     }
   }
 

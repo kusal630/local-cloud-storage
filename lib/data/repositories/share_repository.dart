@@ -25,6 +25,7 @@ class ShareRepository {
             DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
         downloadCount: (row['download_count'] as int?) ?? 0,
         mode: (row['mode'] as String?) ?? 'download',
+        maxDownloads: row['max_downloads'] as int?,
       );
 
   /// Creates a share and returns the plaintext token exactly once.
@@ -38,6 +39,7 @@ class ShareRepository {
     String? targetFolderId,
     Duration? expiresIn,
     String? password,
+    int? maxDownloads,
   }) async {
     final token = Cipher.randomHex(32);
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -49,8 +51,8 @@ class ShareRepository {
       '''
       INSERT INTO shares
         (token_hash, token_prefix, file_id, password_hash, expires_at,
-         download_count, created_at, mode, target_folder_id)
-      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+         download_count, created_at, mode, target_folder_id, max_downloads)
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
       ''',
       [
         Cipher.sha256String(token),
@@ -63,6 +65,7 @@ class ShareRepository {
         now,
         mode,
         targetFolderId,
+        maxDownloads,
       ],
     );
     return (
@@ -77,6 +80,7 @@ class ShareRepository {
             : DateTime.now().add(expiresIn),
         createdAt: DateTime.fromMillisecondsSinceEpoch(now),
         mode: mode,
+        maxDownloads: maxDownloads,
       ),
     );
   }
@@ -90,12 +94,18 @@ class ShareRepository {
     return rows.first;
   }
 
-  /// Validates a token; checks expiry. Does NOT check the password.
+  /// Validates a token; checks expiry and download caps.
+  /// Does NOT check the password.
   Row resolve(String token) {
     final row = _rowByTokenHash(Cipher.sha256String(token));
     final expiresAt = row['expires_at'] as int?;
     if (expiresAt != null &&
         expiresAt < DateTime.now().millisecondsSinceEpoch) {
+      throw const NotFoundException('Share expired.');
+    }
+    final max = row['max_downloads'] as int?;
+    final count = (row['download_count'] as int?) ?? 0;
+    if (max != null && max > 0 && count >= max) {
       throw const NotFoundException('Share expired.');
     }
     return row;

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -54,7 +55,10 @@ class _WelcomeBody extends ConsumerWidget {
               padding: const EdgeInsets.all(28),
               children: [
                 const SizedBox(height: 24),
-                const Center(child: AppLogo(size: 104)),
+                const Center(child: AppLogo(size: 104))
+                    .animate()
+                    .scale(
+                        duration: 450.ms, curve: Curves.easeOutBack),
                 const SizedBox(height: 20),
                 Text(
                   AppConstants.appName,
@@ -63,7 +67,10 @@ class _WelcomeBody extends ConsumerWidget {
                         fontWeight: FontWeight.w800,
                         letterSpacing: -0.5,
                       ),
-                ),
+                )
+                    .animate()
+                    .fadeIn(delay: 120.ms, duration: 350.ms)
+                    .slideY(begin: 0.3, end: 0),
                 const SizedBox(height: 8),
                 Text(
                   'Your private local cloud.\nNo internet. No subscriptions. Just your drive.',
@@ -106,7 +113,10 @@ class _WelcomeBody extends ConsumerWidget {
                       ],
                     ),
                   ),
-                ),
+                )
+                    .animate()
+                    .fadeIn(delay: 220.ms, duration: 350.ms)
+                    .slideY(begin: 0.4, end: 0),
                 const SizedBox(height: 16),
                 _FeatureRow(
                   icon: Icons.bolt_rounded,

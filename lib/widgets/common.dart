@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 
 class LoadingIndicator extends StatelessWidget {
   const LoadingIndicator({super.key, this.message});
@@ -253,7 +254,8 @@ class StorageMeter extends StatelessWidget {
   }
 }
 
-/// Skeleton placeholder row for loading lists.
+/// Skeleton placeholder rows with a shimmer sweep — reads as alive,
+/// not stuck (perceived-performance research).
 class SkeletonList extends StatelessWidget {
   const SkeletonList({super.key, this.rows = 6});
   final int rows;
@@ -263,13 +265,15 @@ class SkeletonList extends StatelessWidget {
     return ListView.separated(
       padding: const EdgeInsets.all(16),
       itemCount: rows,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (_, _) => Container(
+      separatorBuilder: (context, index) => const SizedBox(height: 8),
+      itemBuilder: (context, index) => Container(
         height: 64,
         decoration: BoxDecoration(
             color: c.withValues(alpha: 0.6),
             borderRadius: BorderRadius.circular(12)),
-      ),
+      )
+          .animate(onPlay: (c) => c.repeat())
+          .shimmer(duration: 1400.ms, color: c.withValues(alpha: 0.9)),
     );
   }
 }

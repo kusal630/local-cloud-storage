@@ -10,6 +10,7 @@ import '../features/files/files_screen.dart';
 import '../features/host_dashboard/host_dashboard_screen.dart';
 import '../features/host_setup/host_setup_screen.dart';
 import '../features/preview/preview_screen.dart';
+import '../features/privacy/privacy_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/sharing/shared_links_screen.dart';
 import '../features/storage/storage_screen.dart';
@@ -94,6 +95,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/client/sharing',
         parentNavigatorKey: rootNavigatorKey,
         builder: (context, state) => const SharedLinksScreen(),
+      ),
+      GoRoute(
+        path: '/client/privacy',
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => const PrivacyScreen(),
       ),
     ],
   );

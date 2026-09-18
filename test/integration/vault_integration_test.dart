@@ -209,6 +209,20 @@ void main() {
       expect(dups.length, 1);
       expect(dups.first.files.length, 2);
 
+      // Copy: file copy shares the blob; folder copy recurses.
+      final copied =
+          vault.files.copyItem(dups.first.files.first.id, 'root');
+      expect(copied.blobId, isNotNull);
+      final sub = vault.files.createFolder(folder.id, 'sub');
+      final folderCopy = vault.files.copyItem(folder.id, 'root');
+      expect(folderCopy.isFolder, isTrue);
+      expect(
+          vault.files
+              .listChildren(folderCopy.id)
+              .any((f) => f.name == 'sub'),
+          isTrue);
+      expect(sub.id == folderCopy.id, isFalse);
+
       vault.close();
     } finally {
       await storageDir.delete(recursive: true);

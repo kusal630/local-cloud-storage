@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class PinStore {
   static const String _hashKey = 'app_pin_hash';
   static const String _bioKey = 'app_biometric_unlock';
+  static const String _autoLockKey = 'app_auto_lock_minutes';
 
   Future<bool> get hasPin async {
     final prefs = await SharedPreferences.getInstance();
@@ -43,5 +44,16 @@ class PinStore {
   Future<void> setBiometricEnabled(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_bioKey, value);
+  }
+
+  /// Minutes in background before auto-lock. Default 2, 0 = only on restart.
+  Future<int> get autoLockMinutes async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_autoLockKey) ?? 2;
+  }
+
+  Future<void> setAutoLockMinutes(int value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_autoLockKey, value);
   }
 }

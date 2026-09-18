@@ -79,8 +79,25 @@ class OfflineService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> unpin(String id) async {
-    final entry = _entries.remove(id);
+  int get totalBytes =>
+      _entries.values.fold(0, (sum, e) => sum + e.size);
+
+  Future<void> clearAll() async {
+    try {
+      final dir = await _dir();
+      for (final e in _entries.values) {
+        try {
+          final f = File(p.join(dir.path, e.fileName));
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    _entries.clear();
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> unpin(String id) async {    final entry = _entries.remove(id);
     if (entry != null) {
       try {
         final dir = await _dir();
