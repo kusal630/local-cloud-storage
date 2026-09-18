@@ -97,8 +97,7 @@ void main() {
     }
   });
 
-  test('Server start and health check', () async {
-    final storageDir = Directory('${Directory.systemTemp.path}/lv_server_${DateTime.now().millisecondsSinceEpoch}');
+  test('Server start and health check', () async {    final storageDir = Directory('${Directory.systemTemp.path}/lv_server_${DateTime.now().millisecondsSinceEpoch}');
     await storageDir.create(recursive: true);
 
     try {
@@ -117,6 +116,82 @@ void main() {
 
       await server.stop();
       expect(server.isRunning, isFalse);
+      vault.close();
+    } finally {
+      await storageDir.delete(recursive: true);
+    }
+  });
+
+  test('Wave2: favorites, recent, versions, audit, settings, breakdown',
+      () async {
+    final storageDir = Directory(
+        '${Directory.systemTemp.path}/lv_wave2_${DateTime.now().millisecondsSinceEpoch}');
+    await storageDir.create(recursive: true);
+
+    try {
+      final vault = await Vault.create(storageDir);
+      await vault.completeSetup(password: 'testpass', deviceName: 'Test');
+
+      // Migrations ran: settings defaults present.
+      expect(vault.settings.trashRetentionDays, 30);
+      expect(vault.settings.deviceQuotaBytes, 0);
+
+      // quirk: quota enforcement (unlimited by default).
+      vault.enforceQuota(1 << 40);
+      vault.settings.deviceQuotaBytes = 100;
+      expect(() => vault.enforceQuota(101), throwsA(isA<Exception>()));
+      vault.settings.deviceQuotaBytes = 0;
+
+      // Favorites + recent.
+      final folder = vault.files.createFolder('root', 'Docs');
+      var starred = vault.files.setFavorite(folder.id, true);
+      expect(starred.isFavorite, isTrue);
+      expect(vault.files.listFavorites().length, 1);
+      vault.files.touchOpened(folder.id);
+      expect(vault.files.listRecent().length, 1);
+
+      // Versions: real blob via a temp source file.
+      final src = File('${storageDir.path}/hello.txt');
+      await src.writeAsString('hello world');
+      final blob = await vault.storeBlob(
+        sourcePath: src.path,
+        size: await src.length(),
+        checksum:
+            'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
+        mimeType: 'text/plain',
+      );
+      final file = vault.files.createFile(
+        parentId: 'root',
+        name: 'hello.txt',
+        size: 11,
+        checksum:
+            'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
+        blobId: blob.id,
+        mime: 'text/plain',
+      );
+      vault.versions.snapshot(
+        fileId: file.id,
+        blobId: file.blobId,
+        size: file.size,
+        checksum: file.checksum,
+        mime: file.mime,
+      );
+      final versions = vault.versions.listForFile(file.id);
+      expect(versions.length, 1);
+      expect(versions.first.version, 1);
+
+      // Audit log.
+      vault.auditAction(action: 'file.upload', targetId: file.id);
+      expect(vault.audit.recent(limit: 5).length, 1);
+
+      // Breakdown counts the live file.
+      final breakdown = vault.files.breakdown();
+      expect(breakdown['docs'], 11);
+
+      // Retention purge with 0 days disabled.
+      vault.settings.trashRetentionDays = 0;
+      expect(await vault.purgeExpiredTrash(), 0);
+
       vault.close();
     } finally {
       await storageDir.delete(recursive: true);

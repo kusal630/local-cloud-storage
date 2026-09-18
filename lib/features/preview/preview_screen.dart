@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'dart:async';
 import 'package:localvault/app/providers.dart';
+import 'package:localvault/data/models/file_version.dart';
 import 'package:localvault/data/models/vault_file.dart';
 import 'package:localvault/widgets/common.dart';
 
@@ -29,14 +31,22 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
   Future<void> _load() async {
     try {
       final svc = ref.read(fileServiceProvider);
+      // Record recency (best-effort; never blocks preview).
+      unawaited(() async {
+        try {
+          await svc.touchOpen(widget.fileId);
+        } catch (_) {}
+      }());
       final parentId = ref.read(currentFolderProvider);
       final items = await svc.listFiles(parentId);
       final match = items.where((f) => f.id == widget.fileId).firstOrNull;
+      if (!mounted) return;
       setState(() {
         _file = match;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;
@@ -206,12 +216,70 @@ class _PreviewImageState extends ConsumerState<_PreviewImage> {
   }
 }
 
-class _PreviewMetadata extends StatelessWidget {
+class _PreviewMetadata extends ConsumerStatefulWidget {
   final VaultFile file;
   const _PreviewMetadata({required this.file});
 
   @override
+  ConsumerState<_PreviewMetadata> createState() => _PreviewMetadataState();
+}
+
+class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
+  List<FileVersion>? _versions;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersions();
+  }
+
+  Future<void> _loadVersions() async {
+    if (widget.file.isFolder) return;
+    try {
+      final versions =
+          await ref.read(fileServiceProvider).listVersions(widget.file.id);
+      if (!mounted) return;
+      setState(() => _versions = versions);
+    } catch (_) {}
+  }
+
+  Future<void> _restoreVersion(FileVersion v) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Restore v${v.version}?'),
+        content: Text(
+            'Current content will be archived as a new version first, so nothing is lost.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Restore')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ref
+          .read(fileServiceProvider)
+          .restoreVersion(widget.file.id, v.version);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Restored v${v.version}')),
+      );
+      _loadVersions();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Restore failed: $e')));
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final file = widget.file;
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -222,6 +290,13 @@ class _PreviewMetadata extends StatelessWidget {
         Text(file.name,
             style: Theme.of(context).textTheme.headlineSmall,
             textAlign: TextAlign.center),
+        if (file.isFavorite)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Center(
+              child: StatusPill(label: 'STARRED', color: Color(0xFFFB8C00)),
+            ),
+          ),
         const SizedBox(height: 24),
         Card(
           child: Column(
@@ -231,6 +306,9 @@ class _PreviewMetadata extends StatelessWidget {
               _infoRow(context, 'Size', formatBytes(file.size)),
               _infoRow(context, 'Created', formatDateTime(file.createdAt)),
               _infoRow(context, 'Modified', formatDateTime(file.modifiedAt)),
+              if (file.lastOpenedAt != null)
+                _infoRow(
+                    context, 'Opened', formatDateTime(file.lastOpenedAt!)),
               if (file.checksum != null)
                 ListTile(
                   dense: true,
@@ -248,6 +326,38 @@ class _PreviewMetadata extends StatelessWidget {
             ],
           ),
         ),
+        if (!file.isFolder) ...[
+          const SizedBox(height: 16),
+          const SectionHeader(title: 'VERSION HISTORY'),
+          if (_versions == null)
+            const LoadingIndicator()
+          else if (_versions!.isEmpty)
+            const EmptyState(
+              icon: Icons.history_rounded,
+              title: 'No older versions',
+              subtitle:
+                  'Re-uploading this file with Replace archives versions here.',
+            )
+          else
+            Card(
+              child: Column(
+                children: [
+                  for (final v in _versions!)
+                    ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.history_rounded),
+                      title: Text(
+                          'v${v.version} • ${formatBytes(v.size)}'),
+                      subtitle: Text(formatDateTime(v.createdAt)),
+                      trailing: TextButton(
+                        onPressed: () => _restoreVersion(v),
+                        child: const Text('Restore'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+        ],
       ],
     );
   }

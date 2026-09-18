@@ -3,12 +3,31 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localvault/app/app.dart';
 import 'package:localvault/app/providers.dart';
+import 'package:localvault/client/pin_store.dart';
 
-class SettingsScreen extends ConsumerWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
+  @override
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  bool _hasPin = false;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void initState() {
+    super.initState();
+    _refreshPin();
+  }
+
+  Future<void> _refreshPin() async {
+    final has = await PinStore().hasPin;
+    if (!mounted) return;
+    setState(() => _hasPin = has);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final themeMode = ref.watch(themeModeProvider);
 
     return Scaffold(
@@ -40,6 +59,21 @@ class SettingsScreen extends ConsumerWidget {
             ],
           ),
           _SettingsSection(
+            title: 'Security',
+            children: [
+              _SettingsTile(
+                icon: _hasPin
+                    ? Icons.lock_rounded
+                    : Icons.lock_open_rounded,
+                title: 'App PIN',
+                subtitle: _hasPin
+                    ? 'Enabled — change or disable'
+                    : 'Protect this app with a PIN',
+                onTap: () => _pinSheet(),
+              ),
+            ],
+          ),
+          _SettingsSection(
             title: 'Account',
             children: [
               _SettingsTile(
@@ -63,6 +97,111 @@ class SettingsScreen extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _pinSheet() async {
+    final first = TextEditingController();
+    final second = TextEditingController();
+    var confirmCurrent = false;
+    if (_hasPin) {
+      final current = TextEditingController();
+      confirmCurrent = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Current PIN'),
+              content: TextField(
+                controller: current,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                autofocus: true,
+                decoration:
+                    const InputDecoration(labelText: 'Enter current PIN'),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () =>
+                        Navigator.pop(ctx, current.text.isNotEmpty),
+                    child: const Text('Next')),
+              ],
+            ),
+          ) ??
+          false;
+      if (!confirmCurrent) return;
+      final ok = await PinStore().verify(current.text.trim());
+      if (!mounted) return;
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Wrong PIN.')),
+        );
+        return;
+      }
+    }
+    if (!mounted) return;
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(_hasPin ? 'Change PIN' : 'Set app PIN'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: first,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              maxLength: 8,
+              decoration:
+                  const InputDecoration(labelText: 'New PIN (4-8 digits)'),
+            ),
+            TextField(
+              controller: second,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              maxLength: 8,
+              decoration:
+                  const InputDecoration(labelText: 'Repeat PIN'),
+            ),
+          ],
+        ),
+        actions: [
+          if (_hasPin)
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, 'disable'),
+                child: const Text('Disable',
+                    style: TextStyle(color: Colors.red))),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (action == 'disable') {
+      await PinStore().clear();
+      _refreshPin();
+      return;
+    }
+    if (action != 'save') return;
+    final a = first.text.trim();
+    final b = second.text.trim();
+    if (a.length < 4 || a != b) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('PINs must match and be 4-8 digits.')),
+      );
+      return;
+    }
+    await PinStore().setPin(a);
+    _refreshPin();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('App PIN enabled.')),
     );
   }
 

@@ -19,6 +19,8 @@ import '../repositories/device_repository.dart';
 import '../repositories/file_repository.dart';
 import '../repositories/settings_repository.dart';
 import '../repositories/upload_session_repository.dart';
+import '../repositories/version_repository.dart';
+import '../repositories/audit_repository.dart';
 
 /// The on-disk vault: `<storage>/.localvault` plus the SQLite database and all
 /// repositories. All host-side storage operations go through this object.
@@ -31,6 +33,8 @@ class Vault {
     required this.files,
     required this.blobs,
     required this.uploads,
+    required this.versions,
+    required this.audit,
   });
 
   factory Vault.from({
@@ -45,6 +49,8 @@ class Vault {
       files: FileRepository(database),
       blobs: BlobRepository(database),
       uploads: UploadSessionRepository(database),
+      versions: VersionRepository(database),
+      audit: AuditRepository(database),
     );
   }
 
@@ -55,6 +61,8 @@ class Vault {
   final FileRepository files;
   final BlobRepository blobs;
   final UploadSessionRepository uploads;
+  final VersionRepository versions;
+  final AuditRepository audit;
 
   Directory get blobsDir =>
       Directory(p.join(vaultDir.path, AppConstants.blobsDirName));
@@ -238,5 +246,50 @@ class Vault {
     try {
       database.close();
     } catch (_) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wave 2: quota, retention, audit
+  // ---------------------------------------------------------------------------
+
+  /// Throws [QuotaException] when [incomingBytes] would exceed the vault quota.
+  void enforceQuota(int incomingBytes) {
+    final quota = settings.deviceQuotaBytes;
+    if (quota <= 0) return;
+    final usage = files.usage();
+    if (usage.vaultBytes + incomingBytes > quota) {
+      throw QuotaException(
+        'Quota exceeded: vault holds ${usage.vaultBytes} bytes, '
+        'limit is $quota bytes.',
+      );
+    }
+  }
+
+  /// Permanently deletes trashed items older than the retention setting.
+  /// Returns the number of purged top-level rows (approx).
+  Future<int> purgeExpiredTrash() async {
+    final days = settings.trashRetentionDays;
+    if (days <= 0) return 0;
+    final cutoff = DateTime.now().subtract(Duration(days: days));
+    final orphans = files.purgeTrashOlderThan(cutoff, blobs);
+    await deleteOrphanedBlobs(orphans);
+    audit.record(action: 'trash.purge', detail: 'retention_days=$days');
+    return orphans.length;
+  }
+
+  void auditAction({
+    String? deviceId,
+    required String action,
+    String? targetId,
+    String? targetName,
+    String? detail,
+  }) {
+    audit.record(
+      deviceId: deviceId,
+      action: action,
+      targetId: targetId,
+      targetName: targetName,
+      detail: detail,
+    );
   }
 }

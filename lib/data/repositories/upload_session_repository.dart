@@ -24,6 +24,7 @@ class UploadSessionRepository {
         received: row['received'] as int,
         status: row['status'] as String,
         mime: row['mime'] as String?,
+        replaceFileId: row['replace_file_id'] as String?,
         createdAt:
             DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
       );
@@ -37,16 +38,18 @@ class UploadSessionRepository {
     required String tmpPath,
     String? mime,
     String? deviceId,
+    String? replaceFileId,
   }) {
     final now = DateTime.now().millisecondsSinceEpoch;
     _db.raw.execute(
       '''
       INSERT INTO upload_sessions
         (id, parent_id, name, size, expected_checksum, tmp_path,
-         received, chunk_count, mime, device_id, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
+         received, chunk_count, mime, device_id, status, created_at, updated_at,
+         replace_file_id)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
       ''',
-      [id, parentId, name, size, expectedChecksum, tmpPath, mime, deviceId, statusActive, now, now],
+      [id, parentId, name, size, expectedChecksum, tmpPath, mime, deviceId, statusActive, now, now, replaceFileId],
     );
     return getById(id);
   }

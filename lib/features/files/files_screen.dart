@@ -1,9 +1,11 @@
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localvault/app/providers.dart';
+import 'package:localvault/client/services/transfer_manager.dart';
 import 'package:localvault/data/models/vault_file.dart';
 import 'package:localvault/widgets/common.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -34,12 +36,41 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   bool _selectionMode = false;
   final List<_Crumb> _crumbs = [const _Crumb('root', 'Home')];
   final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
 
   @override
   void initState() {
     super.initState();
     _restorePrefs();
     _load();
+    // Auto-refresh when transfers finish while browsing.
+    ref.read(transferManagerProvider).addListener(_onTransfersChanged);
+  }
+
+  int _doneCount = 0;
+
+  void _onTransfersChanged() {
+    if (!mounted) return;
+    final manager = ref.read(transferManagerProvider);
+    final done = manager.tasks
+        .where((t) =>
+            t.status == TransferStatus.completed ||
+            t.status == TransferStatus.failed)
+        .length;
+    if (done != _doneCount) {
+      _doneCount = done;
+      _load();
+    }
+  }
+
+  @override
+  void dispose() {
+    try {
+      ref.read(transferManagerProvider).removeListener(_onTransfersChanged);
+    } catch (_) {}
+    _searchController.dispose();
+    _searchFocus.dispose();
+    super.dispose();
   }
 
   Future<void> _restorePrefs() async {
@@ -63,21 +94,22 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     } catch (_) {}
   }
 
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
   Future<void> _load() async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final folder = ref.read(currentFolderProvider);
       final svc = ref.read(fileServiceProvider);
-      final items = await svc.listFiles(folder);
+      final List<VaultFile> items;
+      if (_typeFilter == 'starred') {
+        items = await svc.listFavorites();
+      } else if (_typeFilter == 'recent') {
+        items = await svc.listRecent();
+      } else {
+        final folder = ref.read(currentFolderProvider);
+        items = await svc.listFiles(folder);
+      }
       if (!mounted) return;
       setState(() {
         _items = _sortItems(items);
@@ -138,6 +170,13 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
 
   List<VaultFile> get _visible {
     final q = _query.trim().toLowerCase();
+    // Starred/Recent are server-side collections; only the query applies.
+    if (_typeFilter == 'starred' || _typeFilter == 'recent') {
+      if (q.isEmpty) return _items;
+      return _items
+          .where((f) => f.name.toLowerCase().contains(q))
+          .toList();
+    }
     return _items.where((f) {
       if (q.isNotEmpty && !f.name.toLowerCase().contains(q)) return false;
       switch (_typeFilter) {
@@ -241,6 +280,21 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                 _rename(file);
               },
             ),
+            ListTile(
+              leading: Icon(
+                file.isFavorite
+                    ? Icons.star_rounded
+                    : Icons.star_outline_rounded,
+                color: file.isFavorite
+                    ? const Color(0xFFFB8C00)
+                    : null,
+              ),
+              title: Text(file.isFavorite ? 'Unstar' : 'Star'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _toggleFavorite(file);
+              },
+            ),
             if (!file.isFolder)
               ListTile(
                 leading: const Icon(Icons.download_rounded),
@@ -300,6 +354,18 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Rename failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _toggleFavorite(VaultFile file) async {
+    try {
+      await ref.read(fileServiceProvider).setFavorite(file.id, !file.isFavorite);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Star failed: $e')));
       }
     }
   }
@@ -374,14 +440,83 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     final result = await FilePicker.pickFiles();
     if (result.isEmpty) return;
     if (!mounted) return;
+    final existing = {
+      for (final f in _items)
+        if (!f.isFolder) f.name.toLowerCase(): f,
+    };
+    final fresh = <({String path, String name})>[];
+    final conflicts = <({String path, String name, VaultFile target})>[];
     for (final f in result) {
       final path = f.path;
       if (path == null) continue;
+      final hit = existing[f.name.toLowerCase()];
+      if (hit != null) {
+        conflicts.add((path: path, name: f.name, target: hit));
+      } else {
+        fresh.add((path: path, name: f.name));
+      }
+    }
+    var replaceAll = false;
+    if (conflicts.isNotEmpty) {
+      if (!mounted) return;
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('${conflicts.length} file(s) already exist'),
+          content: Text(
+              '${conflicts.map((c) => c.name).take(3).join(', ')}${conflicts.length > 3 ? '…' : ''}\n\nReplace archives the current content as a version. Keep both uploads a copy.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'keep'),
+              child: const Text('Keep both'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'replace'),
+              child: const Text('Replace'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null || choice == 'cancel') {
+        // Upload only the non-conflicting files.
+        for (final f in fresh) {
+          ref.read(transferManagerProvider).enqueueUpload(
+                sourcePath: f.path,
+                parentId: ref.read(currentFolderProvider),
+                name: f.name,
+              );
+        }
+        return;
+      }
+      replaceAll = choice == 'replace';
+    }
+    if (!mounted) return;
+    for (final f in fresh) {
       ref.read(transferManagerProvider).enqueueUpload(
-            sourcePath: path,
+            sourcePath: f.path,
             parentId: ref.read(currentFolderProvider),
             name: f.name,
           );
+    }
+    for (final c in conflicts) {
+      if (replaceAll) {
+        ref.read(transferManagerProvider).enqueueUpload(
+              sourcePath: c.path,
+              parentId: ref.read(currentFolderProvider),
+              name: c.name,
+              replaceFileId: c.target.id,
+            );
+      } else {
+        ref.read(transferManagerProvider).enqueueUpload(
+              sourcePath: c.path,
+              parentId: ref.read(currentFolderProvider),
+              name: c.name,
+            );
+      }
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -430,7 +565,19 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   @override
   Widget build(BuildContext context) {
     final visible = _visible;
-    return Scaffold(
+    // Desktop shortcuts: Ctrl+R refresh, Ctrl+Shift+N folder, / search.
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyR, control: true):
+            () => _load(),
+        const SingleActivator(LogicalKeyboardKey.keyN,
+            control: true, shift: true): () => _createFolder(),
+        const SingleActivator(LogicalKeyboardKey.slash): () =>
+            _searchFocus.requestFocus(),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
       appBar: AppBar(
         title: _selectionMode
             ? Text('${_selected.length} selected')
@@ -542,6 +689,8 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           ],
         ),
       ),
+        ),
+      ),
     );
   }
 
@@ -570,7 +719,8 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: SearchBar(
           controller: _searchController,
-          hintText: 'Search in this folder…',
+          focusNode: _searchFocus,
+          hintText: 'Search in this folder…  ( / )',
           leading: const Icon(Icons.search_rounded),
           trailing: _query.isEmpty
               ? null
@@ -590,6 +740,8 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   Widget _buildFilterChips() {
     const filters = [
       ('all', 'All'),
+      ('starred', 'Starred'),
+      ('recent', 'Recent'),
       ('folders', 'Folders'),
       ('images', 'Images'),
       ('docs', 'Docs'),
@@ -606,7 +758,10 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
               child: FilterChip(
                 label: Text(f.$2),
                 selected: _typeFilter == f.$1,
-                onSelected: (_) => setState(() => _typeFilter = f.$1),
+                onSelected: (_) {
+                  setState(() => _typeFilter = f.$1);
+                  _load();
+                },
               ),
             ),
         ],

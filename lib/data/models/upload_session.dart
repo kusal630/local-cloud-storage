@@ -12,6 +12,7 @@ class UploadSession extends Equatable {
     required this.status,
     this.mime,
     this.createdAt,
+    this.replaceFileId,
   });
 
   final String id;
@@ -23,6 +24,9 @@ class UploadSession extends Equatable {
   final String status; // active | completed | aborted
   final String? mime;
   final DateTime? createdAt;
+  /// When set, completing the upload replaces this file's content and
+  /// archives the previous content as a version.
+  final String? replaceFileId;
 
   UploadSession copyWith({int? received, String? status}) => UploadSession(
         id: id,
@@ -34,6 +38,7 @@ class UploadSession extends Equatable {
         status: status ?? this.status,
         mime: mime,
         createdAt: createdAt,
+        replaceFileId: replaceFileId,
       );
 
   @override
@@ -47,5 +52,6 @@ class UploadSession extends Equatable {
         status,
         mime,
         createdAt,
+        replaceFileId,
       ];
 }

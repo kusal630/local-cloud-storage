@@ -70,6 +70,8 @@ Middleware errorHandler() {
         return ApiResponses.notFound(e.message);
       } on ConflictException catch (e) {
         return ApiResponses.conflict(e.message);
+      } on QuotaException catch (e) {
+        return ApiResponses.error(409, 'QUOTA_EXCEEDED', e.message);
       } on AuthException catch (e) {
         return ApiResponses.unauthorized(e.message);
       } on StorageException catch (e) {

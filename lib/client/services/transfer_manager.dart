@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -5,6 +7,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mime/mime.dart' as mime_pkg;
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/constants/app_constants.dart';
@@ -33,6 +36,7 @@ class TransferTask {
     this.mimeType,
     this.uploadId,
     this.checksum,
+    this.replaceFileId,
   })  : transferredBytes = 0,
         status = TransferStatus.queued,
         createdAt = DateTime.now();
@@ -51,8 +55,82 @@ class TransferTask {
   String? mimeType;
   String? uploadId;
   String? checksum;
+  String? replaceFileId;
   bool cancelRequested = false;
   final DateTime createdAt;
+  DateTime? startedAt;
+  double speedBps = 0;
+  int _lastBytes = 0;
+  DateTime? _lastTick;
+
+  Duration? get eta {
+    if (status != TransferStatus.running || speedBps <= 0) return null;
+    final remaining = totalBytes - transferredBytes;
+    if (remaining <= 0) return Duration.zero;
+    return Duration(seconds: (remaining / speedBps).ceil());
+  }
+
+  void markTick(int bytes) {
+    final now = DateTime.now();
+    startedAt ??= now;
+    final last = _lastTick;
+    if (last != null) {
+      final dt = now.difference(last).inMilliseconds / 1000.0;
+      if (dt > 0.05) {
+        final inst = (bytes - _lastBytes) / dt;
+        speedBps = speedBps <= 0 ? inst : speedBps * 0.7 + inst * 0.3;
+        _lastBytes = bytes;
+        _lastTick = now;
+      }
+    } else {
+      _lastBytes = bytes;
+      _lastTick = now;
+    }
+  }
+
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'type': type.name,
+        'name': name,
+        'totalBytes': totalBytes,
+        'transferredBytes': transferredBytes,
+        'status': status.name,
+        'error': error,
+        'sourcePath': sourcePath,
+        'parentId': parentId,
+        'fileId': fileId,
+        'destPath': destPath,
+        'mimeType': mimeType,
+        'uploadId': uploadId,
+        'checksum': checksum,
+        'replaceFileId': replaceFileId,
+      };
+
+  static TransferTask? fromJson(Map<String, dynamic> m) {
+    try {
+      final task = TransferTask(
+        id: m['id'] as String,
+        type: m['type'] == 'download'
+            ? TransferType.download
+            : TransferType.upload,
+        name: m['name'] as String,
+        totalBytes: (m['totalBytes'] as num).toInt(),
+        sourcePath: m['sourcePath'] as String?,
+        parentId: m['parentId'] as String?,
+        fileId: m['fileId'] as String?,
+        destPath: m['destPath'] as String?,
+        mimeType: m['mimeType'] as String?,
+        uploadId: m['uploadId'] as String?,
+        checksum: m['checksum'] as String?,
+        replaceFileId: m['replaceFileId'] as String?,
+      );
+      task.transferredBytes = (m['transferredBytes'] as num?)?.toInt() ?? 0;
+      task.error = m['error'] as String?;
+      return task;
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 /// Manages upload and download queues with progress reporting.
@@ -77,10 +155,65 @@ class TransferManager extends ChangeNotifier {
   List<TransferTask> get failed =>
       _tasks.where((t) => t.status == TransferStatus.failed).toList();
 
+  static const String _persistKey = 'transfer_queue_v1';
+  bool _restored = false;
+
+  /// Rehydrates tasks persisted before an app restart. Anything that was
+  /// in-flight becomes retryable-failed instead of vanishing.
+  Future<void> restore() async {
+    if (_restored) return;
+    _restored = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_persistKey);
+      if (raw == null || raw.isEmpty) return;
+      final list = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+      var added = false;
+      for (final m in list) {
+        final task = TransferTask.fromJson(m);
+        if (task == null) continue;
+        if (task.status == TransferStatus.running ||
+            task.status == TransferStatus.queued) {
+          task.status = TransferStatus.failed;
+          task.error = 'Interrupted by app restart — tap retry.';
+        }
+        // Drop stale references whose source file is gone.
+        if (task.type == TransferType.upload &&
+            (task.sourcePath == null ||
+                !File(task.sourcePath!).existsSync())) {
+          continue;
+        }
+        _tasks.add(task);
+        added = true;
+      }
+      if (added) _changed();
+    } catch (_) {}
+  }
+
+  Future<void> _persist() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // Cap history so prefs stay small.
+      final snapshot = _tasks.length > 50
+          ? _tasks.sublist(_tasks.length - 50)
+          : _tasks;
+      await prefs.setString(
+        _persistKey,
+        jsonEncode(snapshot.map((t) => t.toJson()).toList()),
+      );
+    } catch (_) {}
+  }
+
+  void _changed() {
+    _changed();
+    unawaited(_persist());
+  }
+
   void enqueueUpload({
     required String sourcePath,
     required String parentId,
     required String name,
+    String? replaceFileId,
   }) {
     final file = File(sourcePath);
     final stat = file.statSync();
@@ -92,9 +225,10 @@ class TransferManager extends ChangeNotifier {
       sourcePath: sourcePath,
       parentId: parentId,
       mimeType: mime_pkg.lookupMimeType(name),
+      replaceFileId: replaceFileId,
     );
     _tasks.add(task);
-    notifyListeners();
+    _changed();
     _startUpload(task);
   }
 
@@ -113,7 +247,7 @@ class TransferManager extends ChangeNotifier {
       destPath: p.join(destDir, name),
     );
     _tasks.add(task);
-    notifyListeners();
+    _changed();
     _startDownload(task);
   }
 
@@ -129,7 +263,7 @@ class TransferManager extends ChangeNotifier {
     _tokens[taskId]?.cancel();
     task.status = TransferStatus.cancelled;
     _tokens.remove(taskId);
-    notifyListeners();
+    _changed();
   }
 
   void retry(String taskId) {
@@ -144,7 +278,7 @@ class TransferManager extends ChangeNotifier {
     task.transferredBytes = 0;
     task.error = null;
     task.cancelRequested = false;
-    notifyListeners();
+    _changed();
     if (task.type == TransferType.upload) {
       _startUpload(task);
     } else {
@@ -154,12 +288,12 @@ class TransferManager extends ChangeNotifier {
 
   void clearCompleted() {
     _tasks.removeWhere((t) => t.status == TransferStatus.completed);
-    notifyListeners();
+    _changed();
   }
 
   void clearAll() {
     _tasks.clear();
-    notifyListeners();
+    _changed();
   }
 
   // ---------------------------------------------------------------------------
@@ -170,7 +304,7 @@ class TransferManager extends ChangeNotifier {
     final token = CancelToken();
     _tokens[task.id] = token;
     task.status = TransferStatus.running;
-    notifyListeners();
+    _changed();
 
     try {
       // 1. Compute SHA-256 of the source file in a background isolate.
@@ -184,10 +318,10 @@ class TransferManager extends ChangeNotifier {
         size: task.totalBytes,
         checksum: checksum,
         mime: task.mimeType,
+        replaceFileId: task.replaceFileId,
       );
       task.uploadId = startResult.uploadId;
       int offset = startResult.received;
-
       // 3. Upload chunks.
       final file = File(task.sourcePath!);
       while (offset < task.totalBytes && !task.cancelRequested) {
@@ -202,12 +336,13 @@ class TransferManager extends ChangeNotifier {
           chunkBytes,
         );
         task.transferredBytes = offset;
-        notifyListeners();
+        task.markTick(offset);
+        _changed();
       }
 
       if (task.cancelRequested) {
         task.status = TransferStatus.cancelled;
-        notifyListeners();
+        _changed();
         return;
       }
 
@@ -215,7 +350,7 @@ class TransferManager extends ChangeNotifier {
       await _fileService.uploadComplete(task.uploadId!);
       task.status = TransferStatus.completed;
       task.transferredBytes = task.totalBytes;
-      notifyListeners();
+      _changed();
     } catch (e) {
       if (task.cancelRequested) {
         task.status = TransferStatus.cancelled;
@@ -224,7 +359,7 @@ class TransferManager extends ChangeNotifier {
         task.error = e.toString();
         logError('Upload failed: ${task.name}', e);
       }
-      notifyListeners();
+      _changed();
     } finally {
       _tokens.remove(task.id);
     }
@@ -238,7 +373,7 @@ class TransferManager extends ChangeNotifier {
     final token = CancelToken();
     _tokens[task.id] = token;
     task.status = TransferStatus.running;
-    notifyListeners();
+    _changed();
 
     try {
       await _fileService.downloadToFile(
@@ -246,7 +381,8 @@ class TransferManager extends ChangeNotifier {
         task.destPath!,
         onProgress: (received, total) {
           task.transferredBytes = received;
-          notifyListeners();
+          task.markTick(received);
+          _changed();
         },
         cancelToken: token,
       );
@@ -256,7 +392,7 @@ class TransferManager extends ChangeNotifier {
         task.status = TransferStatus.completed;
         task.transferredBytes = task.totalBytes;
       }
-      notifyListeners();
+      _changed();
     } catch (e) {
       if (task.cancelRequested || (e is DioException && e.type == DioExceptionType.cancel)) {
         task.status = TransferStatus.cancelled;
@@ -265,7 +401,7 @@ class TransferManager extends ChangeNotifier {
         task.error = e.toString();
         logError('Download failed: ${task.name}', e);
       }
-      notifyListeners();
+      _changed();
     } finally {
       _tokens.remove(task.id);
     }

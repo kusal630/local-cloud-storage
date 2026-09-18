@@ -15,6 +15,8 @@ class VaultFile extends Equatable {
     this.blobId,
     this.deletedAt,
     this.hasThumb = false,
+    this.isFavorite = false,
+    this.lastOpenedAt,
   });
 
   final String id;
@@ -32,6 +34,8 @@ class VaultFile extends Equatable {
   final DateTime modifiedAt;
   final DateTime? deletedAt;
   final bool hasThumb;
+  final bool isFavorite;
+  final DateTime? lastOpenedAt;
 
   bool get isFolder => type == 'folder';
 
@@ -51,5 +55,7 @@ class VaultFile extends Equatable {
         modifiedAt,
         deletedAt,
         hasThumb,
+        isFavorite,
+        lastOpenedAt,
       ];
 }

@@ -130,6 +130,32 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SectionHeader(title: 'HOST SETTINGS'),
+                      _HostSettings(vault: vault),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SectionHeader(title: 'ACTIVITY'),
+                      _ActivityFeed(vault: vault),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
@@ -143,22 +169,30 @@ class _ServerUrls extends StatelessWidget {
   const _ServerUrls({required this.server});
   @override
   Widget build(BuildContext context) {
-    final urls = server.urls as List<String>;
-    return Column(
-      children: urls.map((url) => ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            title: SelectableText(url),
-            trailing: IconButton(
-              icon: const Icon(Icons.copy, size: 18),
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: url));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('URL copied')),
-                );
-              },
-            ),
-          )).toList(),
+    return FutureBuilder<List<String>>(
+      future: server.urls() as Future<List<String>>,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const LoadingIndicator();
+        final urls = snapshot.data!;
+        return Column(
+          children: urls
+              .map((url) => ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: SelectableText(url),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.copy, size: 18),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: url));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('URL copied')),
+                        );
+                      },
+                    ),
+                  ))
+              .toList(),
+        );
+      },
     );
   }
 }
@@ -173,6 +207,27 @@ class _PairingSection extends StatefulWidget {
 
 class _PairingSectionState extends State<_PairingSection> {
   String? _code;
+  String? _lanHost;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveLan();
+  }
+
+  Future<void> _resolveLan() async {
+    try {
+      final url = await (widget.server.lanUrl() as Future<String?>);
+      if (!mounted) return;
+      setState(() {
+        _lanHost = (url ?? 'http://localhost:${widget.server.port}')
+            .replaceFirst(RegExp(r'^https?://'), '');
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _lanHost = 'localhost:${widget.server.port}');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -184,11 +239,14 @@ class _PairingSectionState extends State<_PairingSection> {
 
     return Column(
       children: [
-        QrImageView(
-          data: 'localvault://${(server.lanUrl ?? 'localhost:${server.port}').replaceFirst(RegExp(r'^https?://'), '')}',
-          version: QrVersions.auto,
-          size: 180,
-        ),
+        if (_lanHost == null)
+          const LoadingIndicator()
+        else
+          QrImageView(
+            data: 'localvault://$_lanHost',
+            version: QrVersions.auto,
+            size: 180,
+          ),
         const SizedBox(height: 12),
         SelectableText(
           _code!,
@@ -321,4 +379,210 @@ class _StorageInfoState extends ConsumerState<_StorageInfo> {
           children: [Text(label), Text(value)],
         ),
       );
+}
+
+class _HostSettings extends StatefulWidget {
+  final dynamic vault;
+  const _HostSettings({required this.vault});
+  @override
+  State<_HostSettings> createState() => _HostSettingsState();
+}
+
+class _HostSettingsState extends State<_HostSettings> {
+  late final TextEditingController _retention;
+  late final TextEditingController _quotaGb;
+  late final TextEditingController _cert;
+  late final TextEditingController _key;
+  String? _saved;
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = widget.vault.settings;
+    _retention =
+        TextEditingController(text: '${settings.trashRetentionDays}');
+    final quota = settings.deviceQuotaBytes as int;
+    _quotaGb = TextEditingController(
+        text: quota <= 0 ? '' : (quota / 1073741824).toStringAsFixed(1));
+    _cert =
+        TextEditingController(text: '${settings.tlsCertPath ?? ''}');
+    _key = TextEditingController(text: '${settings.tlsKeyPath ?? ''}');
+  }
+
+  @override
+  void dispose() {
+    _retention.dispose();
+    _quotaGb.dispose();
+    _cert.dispose();
+    _key.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    try {
+      final days = int.tryParse(_retention.text.trim()) ?? -1;
+      if (days < 0 || days > 3650) {
+        setState(() => _saved = 'Retention must be 0..3650 days.');
+        return;
+      }
+      final quotaGb = _quotaGb.text.trim();
+      final quotaBytes = quotaGb.isEmpty
+          ? 0
+          : ((double.tryParse(quotaGb) ?? -1) * 1073741824).round();
+      if (quotaBytes < 0) {
+        setState(() => _saved = 'Quota must be empty or >= 0 GB.');
+        return;
+      }
+      widget.vault.settings.trashRetentionDays = days;
+      widget.vault.settings.deviceQuotaBytes = quotaBytes;
+      final cert = _cert.text.trim();
+      final key = _key.text.trim();
+      if (cert.isEmpty && key.isEmpty) {
+        widget.vault.settings.tlsPaths = null;
+      } else {
+        widget.vault.settings.tlsPaths = (cert: cert, key: key);
+      }
+      setState(() => _saved =
+          'Saved. TLS takes effect on next server start.');
+    } catch (e) {
+      setState(() => _saved = 'Save failed: $e');
+    }
+  }
+
+  Future<void> _purgeNow() async {
+    try {
+      final n = await widget.vault.purgeExpiredTrash();
+      if (!mounted) return;
+      setState(() => _saved = 'Purged $n orphaned blob(s).');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Purged $n orphaned blob(s).')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saved = 'Purge failed: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        TextField(
+          controller: _retention,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Trash retention (days, 0 = forever)',
+            prefixIcon: Icon(Icons.auto_delete_rounded),
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _quotaGb,
+          keyboardType:
+              const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+            labelText: 'Vault quota (GB, empty = unlimited)',
+            prefixIcon: Icon(Icons.pie_chart_rounded),
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _cert,
+          decoration: const InputDecoration(
+            labelText: 'TLS cert PEM path (optional)',
+            prefixIcon: Icon(Icons.lock_rounded),
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _key,
+          decoration: const InputDecoration(
+            labelText: 'TLS key PEM path (optional)',
+            prefixIcon: Icon(Icons.key_rounded),
+          ),
+        ),
+        if (_saved != null) ...[
+          const SizedBox(height: 8),
+          Text(_saved!, style: Theme.of(context).textTheme.bodySmall),
+        ],
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton(
+                onPressed: _save,
+                child: const Text('Save'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _purgeNow,
+                child: const Text('Purge now'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ActivityFeed extends StatelessWidget {
+  final dynamic vault;
+  const _ActivityFeed({required this.vault});
+
+  static const _icons = {
+    'file.upload': Icons.cloud_upload_rounded,
+    'file.version.create': Icons.history_rounded,
+    'file.version.restore': Icons.restore_rounded,
+    'file.rename': Icons.edit_rounded,
+    'file.move': Icons.drive_file_move_rounded,
+    'file.trash': Icons.delete_rounded,
+    'file.restore': Icons.restore_from_trash_rounded,
+    'file.destroy': Icons.delete_forever_rounded,
+    'file.star': Icons.star_rounded,
+    'file.unstar': Icons.star_outline_rounded,
+    'folder.create': Icons.create_new_folder_rounded,
+    'trash.empty': Icons.delete_sweep_rounded,
+    'trash.purge': Icons.auto_delete_rounded,
+    'trash.purge.manual': Icons.auto_delete_rounded,
+    'device.revoke': Icons.block_rounded,
+    'settings.update': Icons.settings_rounded,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    List entries;
+    try {
+      entries = vault.audit.recent(limit: 20) as List;
+    } catch (_) {
+      return const Text('Activity unavailable.');
+    }
+    if (entries.isEmpty) {
+      return const EmptyState(
+        icon: Icons.timeline_rounded,
+        title: 'No activity yet',
+        subtitle: 'Uploads, renames and deletes show up here.',
+      );
+    }
+    return Column(
+      children: [
+        for (final e in entries)
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(_icons[e.action as String] ??
+                Icons.circle_rounded),
+            title: Text(
+              (e.targetName as String?) ?? (e.action as String),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+                '${e.action} • ${formatDateTime(e.createdAt)}'),
+          ),
+      ],
+    );
+  }
 }

@@ -4,11 +4,23 @@ import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/transfer_manager.dart';
 import 'package:localvault/widgets/common.dart';
 
-class TransfersScreen extends ConsumerWidget {
+class TransfersScreen extends ConsumerStatefulWidget {
   const TransfersScreen({super.key});
+  @override
+  ConsumerState<TransfersScreen> createState() => _TransfersScreenState();
+}
+
+class _TransfersScreenState extends ConsumerState<TransfersScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Rehydrate tasks persisted before an app restart.
+    Future.microtask(
+        () => ref.read(transferManagerProvider).restore());
+  }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final manager = ref.watch(transferManagerProvider);
     final tasks = manager.tasks;
     final colors = Theme.of(context).colorScheme;
@@ -65,11 +77,18 @@ class TransfersScreen extends ConsumerWidget {
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            Text(
-                              '${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)} • ${(progress * 100).round()}%',
-                              style: Theme.of(context).textTheme.bodySmall,
+                            Expanded(
+                              child: Text(
+                                '${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)} • ${(progress * 100).round()}%'
+                                '${task.status == TransferStatus.running && task.speedBps > 0 ? ' • ${formatBytes(task.speedBps.round())}/s' : ''}'
+                                '${task.status == TransferStatus.running && task.eta != null ? ' • ETA ${formatDuration(task.eta!)}' : ''}'
+                                '${task.error != null && task.status == TransferStatus.failed ? '\n${task.error}' : ''}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                            const Spacer(),
+                            const SizedBox(width: 8),
                             Text(
                               _statusLabel(task.status, isUpload),
                               style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -89,8 +108,7 @@ class TransfersScreen extends ConsumerWidget {
     );
   }
 
-  Widget? _buildAction(TransferTask task, TransferManager manager) {
-    switch (task.status) {
+  Widget? _buildAction(TransferTask task, TransferManager manager) {    switch (task.status) {
       case TransferStatus.queued:
       case TransferStatus.running:
         return IconButton(

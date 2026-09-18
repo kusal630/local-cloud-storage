@@ -36,7 +36,55 @@ class FileRepository {
             ? null
             : DateTime.fromMillisecondsSinceEpoch(row['deleted_at'] as int),
         hasThumb: (row['has_thumb'] as int?) == 1,
+        isFavorite: (row['is_favorite'] as int?) == 1,
+        lastOpenedAt: row['last_opened_at'] == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(
+                row['last_opened_at'] as int),
       );
+
+  VaultFile setFavorite(String id, bool value) {
+    final entry = getById(id);
+    if (entry.isTrashed) {
+      throw const ValidationException('Trashed items cannot be starred.');
+    }
+    _db.raw.execute(
+      'UPDATE files SET is_favorite = ?, modified_at = modified_at WHERE id = ?',
+      [value ? 1 : 0, id],
+    );
+    return getById(id);
+  }
+
+  List<VaultFile> listFavorites() {
+    final rows = _db.raw.select(
+      '''
+      SELECT * FROM files
+      WHERE deleted_at IS NULL AND is_favorite = 1 AND id != ?
+      ORDER BY name COLLATE NOCASE ASC LIMIT 200
+      ''',
+      [AppConstants.rootFolderId],
+    );
+    return rows.map(_fromRow).toList();
+  }
+
+  void touchOpened(String id) {
+    _db.raw.execute(
+      'UPDATE files SET last_opened_at = ?, modified_at = modified_at WHERE id = ?',
+      [DateTime.now().millisecondsSinceEpoch, id],
+    );
+  }
+
+  List<VaultFile> listRecent({int limit = 30}) {
+    final rows = _db.raw.select(
+      '''
+      SELECT * FROM files
+      WHERE deleted_at IS NULL AND last_opened_at IS NOT NULL AND id != ?
+      ORDER BY last_opened_at DESC LIMIT ?
+      ''',
+      [AppConstants.rootFolderId, limit.clamp(1, 100)],
+    );
+    return rows.map(_fromRow).toList();
+  }
 
   VaultFile getById(String id) {
     final rows = _db.raw.select('SELECT * FROM files WHERE id = ?', [id]);
@@ -320,6 +368,9 @@ class FileRepository {
           orphaned.add(blobs.getById(blobId));
         }
       }
+      _db.raw.execute(
+        'DELETE FROM file_versions WHERE file_id NOT IN (SELECT id FROM files)',
+      );
       return orphaned;
     });
   }
@@ -336,6 +387,9 @@ class FileRepository {
         blobIds.addAll(_descendantBlobIds(row['id'] as String));
       }
       _db.raw.execute('DELETE FROM files WHERE deleted_at IS NOT NULL');
+      _db.raw.execute(
+        'DELETE FROM file_versions WHERE file_id NOT IN (SELECT id FROM files)',
+      );
       for (final blobId in blobIds) {
         if (blobs.deleteIfUnused(blobId)) {
           orphaned.add(blobs.getById(blobId));
@@ -361,8 +415,7 @@ class FileRepository {
   }
 
   /// Usage in bytes of live and trashed files.
-  ({int vaultBytes, int trashBytes}) usage() {
-    final row = _db.raw.select(
+  ({int vaultBytes, int trashBytes}) usage() {    final row = _db.raw.select(
       '''
       SELECT
         SUM(CASE WHEN deleted_at IS NULL THEN size ELSE 0 END) AS vault_bytes,
@@ -374,6 +427,134 @@ class FileRepository {
       vaultBytes: (row['vault_bytes'] as int?) ?? 0,
       trashBytes: (row['trash_bytes'] as int?) ?? 0,
     );
+  }
+
+  /// Bytes per file category across live files (for the breakdown chart).
+  Map<String, int> breakdown() {
+    final rows = _db.raw.select(
+      '''
+      SELECT name, mime, size FROM files
+      WHERE deleted_at IS NULL AND type = ? AND id != ?
+      ''',
+      [typeFile, AppConstants.rootFolderId],
+    );
+    final result = <String, int>{
+      'images': 0,
+      'video': 0,
+      'audio': 0,
+      'docs': 0,
+      'archives': 0,
+      'other': 0,
+    };
+    for (final row in rows) {
+      final cat = _categoryOf(
+        row['name'] as String,
+        row['mime'] as String?,
+      );
+      result[cat] = (result[cat] ?? 0) + ((row['size'] as int?) ?? 0);
+    }
+    return result;
+  }
+
+  String _categoryOf(String name, String? mime) {
+    final m = (mime ?? '').toLowerCase();
+    if (m.startsWith('image/')) return 'images';
+    if (m.startsWith('video/')) return 'video';
+    if (m.startsWith('audio/')) return 'audio';
+    final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    if (const {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp', 'svg'}
+        .contains(ext)) {
+      return 'images';
+    }
+    if (const {'mp4', 'mkv', 'mov', 'avi', 'webm'}.contains(ext)) {
+      return 'video';
+    }
+    if (const {'mp3', 'wav', 'flac', 'ogg', 'm4a'}.contains(ext)) {
+      return 'audio';
+    }
+    if (const {
+      'pdf',
+      'doc',
+      'docx',
+      'txt',
+      'md',
+      'rtf',
+      'xls',
+      'xlsx',
+      'csv',
+      'ppt',
+      'pptx'
+    }.contains(ext)) {
+      return 'docs';
+    }
+    if (const {'zip', 'rar', '7z', 'tar', 'gz'}.contains(ext)) {
+      return 'archives';
+    }
+    return 'other';
+  }
+
+  /// Permanently deletes trashed items older than [cutoff] and returns blob
+  /// records that lost their last reference.
+  List<BlobRecord> purgeTrashOlderThan(
+      DateTime cutoff, BlobRepository blobs) {
+    return _db.withTransaction(() {
+      final orphaned = <BlobRecord>[];
+      final rows = _db.raw.select(
+        'SELECT id FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?',
+        [cutoff.millisecondsSinceEpoch],
+      );
+      final blobIds = <String>{};
+      for (final row in rows) {
+        blobIds.addAll(_descendantBlobIds(row['id'] as String));
+      }
+      _db.raw.execute(
+        'DELETE FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?',
+        [cutoff.millisecondsSinceEpoch],
+      );
+      // Detach versions of files that no longer exist.
+      _db.raw.execute(
+        '''
+        DELETE FROM file_versions WHERE file_id NOT IN (SELECT id FROM files)
+        ''',
+      );
+      for (final blobId in blobIds) {
+        if (blobs.deleteIfUnused(blobId)) {
+          orphaned.add(blobs.getById(blobId));
+        }
+      }
+      return orphaned;
+    });
+  }
+
+  /// Points [id] at a new blob (used by replace-upload after snapshotting).
+  VaultFile replaceContent({
+    required String id,
+    required String blobId,
+    required int size,
+    required String checksum,
+    String? mime,
+  }) {
+    final entry = getById(id);
+    if (entry.isTrashed || entry.isFolder) {
+      throw const ValidationException('Only live files can be replaced.');
+    }
+    _db.raw.execute(
+      '''
+      UPDATE files
+      SET blob_id = ?, size = ?, checksum = ?, mime = ?, has_thumb = 0,
+          modified_at = ?
+      WHERE id = ?
+      ''',
+      [
+        blobId,
+        size,
+        checksum,
+        mime,
+        DateTime.now().millisecondsSinceEpoch,
+        id
+      ],
+    );
+    return getById(id);
   }
 
   String _newId() {

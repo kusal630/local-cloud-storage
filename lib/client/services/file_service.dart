@@ -2,10 +2,23 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import '../../data/models/audit_entry.dart';
 import '../../data/models/device.dart';
+import '../../data/models/file_version.dart';
 import '../../data/models/storage_status.dart';
 import '../../data/models/vault_file.dart';
 import '../api_client.dart';
+
+class HostSettings {
+  HostSettings({
+    required this.trashRetentionDays,
+    required this.deviceQuotaBytes,
+    required this.tlsConfigured,
+  });
+  final int trashRetentionDays;
+  final int deviceQuotaBytes;
+  final bool tlsConfigured;
+}
 
 class UploadStartResponse {
   UploadStartResponse({
@@ -89,6 +102,145 @@ class FileService {
       final data = LocalVaultApi.decodeData(response);
       final items = (data['items'] as List).cast<Map<String, dynamic>>();
       return items.map(_parseFile).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<VaultFile> setFavorite(String id, bool value) async {
+    try {
+      final response =
+          await _dio.patch('/files/$id', data: {'isFavorite': value});
+      final data = LocalVaultApi.decodeData(response);
+      return _parseFile(data['item'] as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<VaultFile>> listFavorites() async {
+    try {
+      final response = await _dio.get('/files/favorites');
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseFile).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<VaultFile>> listRecent({int limit = 30}) async {
+    try {
+      final response =
+          await _dio.get('/files/recent', queryParameters: {'limit': limit});
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseFile).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<void> touchOpen(String id) async {
+    try {
+      final response = await _dio.post('/files/$id/open');
+      LocalVaultApi.decodeData(response);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<FileVersion>> listVersions(String fileId) async {
+    try {
+      final response = await _dio.get('/files/$fileId/versions');
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseVersion).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<VaultFile> restoreVersion(String fileId, int version) async {
+    try {
+      final response =
+          await _dio.post('/files/$fileId/versions/$version/restore');
+      final data = LocalVaultApi.decodeData(response);
+      return _parseFile(data['item'] as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<Map<String, int>> storageBreakdown() async {
+    try {
+      final response = await _dio.get('/storage/breakdown');
+      final data = LocalVaultApi.decodeData(response);
+      final map = data['breakdown'] as Map<String, dynamic>;
+      return map.map((k, v) => MapEntry(k, (v as num).toInt()));
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<AuditEntry>> activity({int limit = 50}) async {
+    try {
+      final response =
+          await _dio.get('/activity', queryParameters: {'limit': limit});
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseAudit).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<HostSettings> getSettings() async {
+    try {
+      final response = await _dio.get('/settings');
+      final data = LocalVaultApi.decodeData(response);
+      return HostSettings(
+        trashRetentionDays: (data['trashRetentionDays'] as num).toInt(),
+        deviceQuotaBytes: (data['deviceQuotaBytes'] as num).toInt(),
+        tlsConfigured: data['tlsConfigured'] as bool? ?? false,
+      );
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<HostSettings> updateSettings({
+    int? trashRetentionDays,
+    int? deviceQuotaBytes,
+    String? tlsCertPath,
+    String? tlsKeyPath,
+    bool clearTls = false,
+  }) async {
+    try {
+      final response = await _dio.put('/settings', data: {
+        if (trashRetentionDays != null)
+          'trashRetentionDays': trashRetentionDays,
+        if (deviceQuotaBytes != null) 'deviceQuotaBytes': deviceQuotaBytes,
+        if (clearTls) ...{'tlsCertPath': '', 'tlsKeyPath': ''},
+        if (tlsCertPath != null) 'tlsCertPath': tlsCertPath,
+        if (tlsKeyPath != null) 'tlsKeyPath': tlsKeyPath,
+      });
+      final data = LocalVaultApi.decodeData(response);
+      return HostSettings(
+        trashRetentionDays: (data['trashRetentionDays'] as num).toInt(),
+        deviceQuotaBytes: (data['deviceQuotaBytes'] as num).toInt(),
+        tlsConfigured: data['tlsConfigured'] as bool? ?? false,
+      );
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<int> purgeExpiredTrash() async {
+    try {
+      final response = await _dio.post('/trash/purge-expired');
+      final data = LocalVaultApi.decodeData(response);
+      return (data['purgedBlobs'] as num?)?.toInt() ?? 0;
     } on DioException catch (e) {
       throw LocalVaultApi.mapError(e);
     }
@@ -179,6 +331,7 @@ class FileService {
     required int size,
     required String checksum,
     String? mime,
+    String? replaceFileId,
   }) async {
     try {
       final response = await _dio.post('/files/upload/start', data: {
@@ -187,6 +340,7 @@ class FileService {
         'size': size,
         'checksum': checksum,
         if (mime != null) 'mime': mime,
+        if (replaceFileId != null) 'replaceFileId': replaceFileId,
       });
       final data = LocalVaultApi.decodeData(response);
       return UploadStartResponse(
@@ -338,6 +492,31 @@ class FileService {
             ? null
             : DateTime.parse(m['deletedAt'] as String),
         hasThumb: m['hasThumb'] as bool? ?? false,
+        isFavorite: m['isFavorite'] as bool? ?? false,
+        lastOpenedAt: m['lastOpenedAt'] == null
+            ? null
+            : DateTime.parse(m['lastOpenedAt'] as String),
+      );
+
+  static FileVersion _parseVersion(Map<String, dynamic> m) => FileVersion(
+        id: m['id'] as String,
+        fileId: m['fileId'] as String,
+        version: (m['version'] as num).toInt(),
+        blobId: m['blobId'] as String?,
+        size: (m['size'] as num).toInt(),
+        checksum: m['checksum'] as String?,
+        mime: m['mime'] as String?,
+        createdAt: DateTime.parse(m['createdAt'] as String),
+      );
+
+  static AuditEntry _parseAudit(Map<String, dynamic> m) => AuditEntry(
+        id: m['id'] as String,
+        deviceId: m['deviceId'] as String?,
+        action: m['action'] as String,
+        targetId: m['targetId'] as String?,
+        targetName: m['targetName'] as String?,
+        detail: m['detail'] as String?,
+        createdAt: DateTime.parse(m['createdAt'] as String),
       );
 
   static Device _parseDevice(Map<String, dynamic> m) => Device(

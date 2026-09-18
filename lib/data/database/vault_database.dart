@@ -109,6 +109,41 @@ class VaultDatabase {
     _db.execute('''
       CREATE INDEX IF NOT EXISTS idx_files_deleted ON files(deleted_at);
     ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS file_versions (
+        id         TEXT PRIMARY KEY,
+        file_id    TEXT NOT NULL,
+        version    INTEGER NOT NULL,
+        blob_id    TEXT,
+        size       INTEGER NOT NULL DEFAULT 0,
+        checksum   TEXT,
+        mime       TEXT,
+        created_at INTEGER NOT NULL
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_versions_file
+        ON file_versions(file_id, version DESC);
+    ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id         TEXT PRIMARY KEY,
+        device_id  TEXT,
+        action     TEXT NOT NULL,
+        target_id  TEXT,
+        target_name TEXT,
+        detail     TEXT,
+        created_at INTEGER NOT NULL
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC);
+    ''');
+
+    // Additive column migrations for pre-existing vaults.
+    _ensureColumn('files', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
+    _ensureColumn('files', 'last_opened_at', 'INTEGER');
+    _ensureColumn('upload_sessions', 'replace_file_id', 'TEXT');
 
     // Seed the virtual root folder.
     final roots = _db.select(
@@ -124,6 +159,15 @@ class VaultDatabase {
         ''',
         [AppConstants.rootFolderId, AppConstants.rootFolderId, 'root', 'folder', now, now],
       );
+    }
+  }
+
+  /// Adds [column] with [definition] when it does not exist yet.
+  void _ensureColumn(String table, String column, String definition) {
+    final info = _db.select('PRAGMA table_info($table)');
+    final exists = info.any((r) => (r['name'] as String) == column);
+    if (!exists) {
+      _db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
     }
   }
 

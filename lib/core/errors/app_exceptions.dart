@@ -56,3 +56,8 @@ class StorageException extends AppException {
 class ServerStartException extends AppException {
   const ServerStartException(super.message, {super.cause});
 }
+
+/// Upload rejected because the vault quota would be exceeded.
+class QuotaException extends AppException {
+  const QuotaException(super.message, {super.cause});
+}

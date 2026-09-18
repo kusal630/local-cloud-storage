@@ -115,6 +115,8 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                               ),
                             ),
                           ),
+                          const SizedBox(height: 16),
+                          const _BreakdownCard(),
                         ],
                       ),
                     ),
@@ -135,4 +137,74 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
           ],
         ),
       );
+}
+
+class _BreakdownCard extends ConsumerWidget {
+  const _BreakdownCard();
+
+  static const _colors = {
+    'images': Color(0xFF7C4DFF),
+    'video': Color(0xFFE040FB),
+    'audio': Color(0xFF00ACC1),
+    'docs': Color(0xFF43A047),
+    'archives': Color(0xFFFB8C00),
+    'other': Color(0xFF90A4AE),
+  };
+
+  static const _labels = {
+    'images': 'Images',
+    'video': 'Video',
+    'audio': 'Audio',
+    'docs': 'Documents',
+    'archives': 'Archives',
+    'other': 'Other',
+  };
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionHeader(title: 'BY TYPE'),
+            FutureBuilder<Map<String, int>>(
+              future:
+                  ref.read(fileServiceProvider).storageBreakdown(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Text('Breakdown unavailable.',
+                      style: Theme.of(context).textTheme.bodySmall);
+                }
+                if (!snapshot.hasData) return const LoadingIndicator();
+                final map = snapshot.data!;
+                final total =
+                    map.values.fold<int>(0, (a, b) => a + b);
+                if (total <= 0) {
+                  return const Text('Vault is empty.');
+                }
+                return Column(
+                  children: [
+                    for (final key in _labels.keys)
+                      if ((map[key] ?? 0) > 0)
+                        Padding(
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 5),
+                          child: StorageMeter(
+                            fraction: map[key]! / total,
+                            usedLabel: _labels[key]!,
+                            freeLabel: formatBytes(map[key]!),
+                            color: _colors[key],
+                          ),
+                        ),
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

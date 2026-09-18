@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 
 import '../core/errors/app_exceptions.dart';
 import '../core/logging/app_logger.dart';
@@ -32,6 +35,23 @@ class LocalVaultApi {
   String? _serverUrl;
 
   String? get serverUrl => _serverUrl;
+
+  bool _trustSelfSigned = false;
+
+  /// When true, TLS certificate errors are ignored (LAN self-signed certs).
+  /// Off by default; enable only for hosts you trust.
+  void setTrustSelfSigned(bool value) {
+    _trustSelfSigned = value;
+    final adapter = _dio.httpClientAdapter;
+    if (adapter is IOHttpClientAdapter) {
+      adapter.createHttpClient = () {
+        final client = HttpClient();
+        client.badCertificateCallback =
+            (cert, host, port) => _trustSelfSigned;
+        return client;
+      };
+    }
+  }
 
   /// Configures the base URL. Expected format: `http://host:port`.
   void configure(String serverUrl) {

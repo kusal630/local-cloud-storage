@@ -11,6 +11,10 @@ class SettingsRepository {
   static const String storageRootKey = 'storage_root';
   static const String serverPortKey = 'server_port';
   static const String hostDeviceNameKey = 'host_device_name';
+  static const String trashRetentionDaysKey = 'trash_retention_days';
+  static const String deviceQuotaBytesKey = 'device_quota_bytes';
+  static const String tlsCertPathKey = 'tls_cert_path';
+  static const String tlsKeyPathKey = 'tls_key_path';
 
   String? get(String key) {
     final rows = _db.raw.select(
@@ -55,6 +59,39 @@ class SettingsRepository {
       get(hostDeviceNameKey) ?? 'My LocalVault';
 
   set hostDeviceName(String value) => set(hostDeviceNameKey, value);
+
+  /// Trash auto-purge retention in days. 30 by default, 0 = keep forever.
+  int get trashRetentionDays {
+    final raw = get(trashRetentionDaysKey);
+    if (raw == null) return 30;
+    return int.tryParse(raw) ?? 30;
+  }
+
+  set trashRetentionDays(int value) =>
+      set(trashRetentionDaysKey, '$value');
+
+  /// Per-upload quota: rejects uploads that would push vault usage above this
+  /// many bytes. 0 (default) = unlimited.
+  int get deviceQuotaBytes {
+    final raw = get(deviceQuotaBytesKey);
+    if (raw == null) return 0;
+    return int.tryParse(raw) ?? 0;
+  }
+
+  set deviceQuotaBytes(int value) => set(deviceQuotaBytesKey, '$value');
+
+  String? get tlsCertPath => get(tlsCertPathKey);
+  String? get tlsKeyPath => get(tlsKeyPathKey);
+
+  set tlsPaths(({String cert, String key})? value) {
+    if (value == null) {
+      _setOrDelete(tlsCertPathKey, null);
+      _setOrDelete(tlsKeyPathKey, null);
+    } else {
+      set(tlsCertPathKey, value.cert);
+      set(tlsKeyPathKey, value.key);
+    }
+  }
 
   void _setOrDelete(String key, String? value) {
     if (value == null) {

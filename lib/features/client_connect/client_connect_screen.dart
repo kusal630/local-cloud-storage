@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/providers.dart';
+import '../../core/discovery/beacon.dart';
 import '../../widgets/common.dart';
 
 class ClientConnectScreen extends ConsumerStatefulWidget {
@@ -21,12 +22,16 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
   bool _loading = false;
   String? _error;
   bool _scanning = false;
+  bool _trustHttps = false;
+  DiscoveryListener? _discovery;
+  List<DiscoveredNode> _nearby = [];
 
   @override
   void dispose() {
     _urlController.dispose();
     _codeController.dispose();
     _nameController.dispose();
+    _discovery?.stop();
     super.dispose();
   }
 
@@ -52,6 +57,7 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
     });
     try {
       final authService = ref.read(authServiceProvider);
+      ref.read(apiClientProvider).setTrustSelfSigned(_trustHttps);
       await authService.pair(
         serverUrl: url,
         pairingCode: code,
@@ -60,6 +66,7 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('last_server_url', url);
+        await prefs.setBool('trust_https', _trustHttps);
       } catch (_) {}
       if (mounted) context.go('/client/files');
     } catch (e) {
@@ -75,8 +82,26 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
   void initState() {
     super.initState();
     SharedPreferences.getInstance().then((prefs) {
+      if (!mounted) return;
       final last = prefs.getString('last_server_url');
-      if (last != null && mounted) _urlController.text = last;
+      if (last != null) _urlController.text = last;
+      setState(() => _trustHttps = prefs.getBool('trust_https') ?? false);
+    }).catchError((_) {});
+    _startDiscovery();
+  }
+
+  Future<void> _startDiscovery() async {
+    final listener = DiscoveryListener();
+    try {
+      await listener.start();
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _discovery = listener);
+    listener.nodes.listen((nodes) {
+      if (!mounted) return;
+      setState(() => _nearby = nodes);
     });
   }
 
@@ -123,6 +148,55 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
           ],
           const SizedBox(height: 24),
 
+          // Nearby nodes via LAN discovery
+          const SectionHeader(title: 'NEARBY NODES'),
+          const SizedBox(height: 8),
+          if (_nearby.isEmpty)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Icon(Icons.radar_rounded,
+                        color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                          'Listening for storage nodes…\nStart a node on the same Wi-Fi and it appears here.'),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Card(
+              child: Column(
+                children: [
+                  for (final node in _nearby)
+                    ListTile(
+                      leading: VaultFileIcon(
+                          name: 'node', isFolder: false, size: 36),
+                      title: Text(node.deviceName),
+                      subtitle: Text(
+                          '${node.url}${node.secure ? ' • HTTPS' : ''}'),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () {
+                        _urlController.text = node.url;
+                        if (node.secure && !_trustHttps) {
+                          setState(() => _trustHttps = true);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'HTTPS node — self-signed trust enabled.')),
+                          );
+                        }
+                      },
+                    ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 24),
+
           // Manual entry
           const SectionHeader(title: 'STEP 2 — ENTER CODE'),
           const SizedBox(height: 8),
@@ -154,7 +228,16 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
               prefixIcon: Icon(Icons.devices),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 8),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Trust self-signed HTTPS'),
+            subtitle: const Text(
+                'Needed only for hosts with a custom TLS certificate.'),
+            value: _trustHttps,
+            onChanged: (v) => setState(() => _trustHttps = v ?? false),
+          ),
+          const SizedBox(height: 16),
 
           if (_error != null)
             Padding(

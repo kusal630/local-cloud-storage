@@ -14,7 +14,9 @@ import '../../core/logging/app_logger.dart';
 import '../../core/utils/cipher.dart';
 import '../../core/utils/file_names.dart';
 import '../../data/datasources/vault.dart';
+import '../../data/models/audit_entry.dart';
 import '../../data/models/device.dart';
+import '../../data/models/file_version.dart';
 import '../../data/models/vault_file.dart';
 import '../middleware/api_responses.dart';
 import '../middleware/auth_middleware.dart';
@@ -34,6 +36,29 @@ Map<String, Object?> fileToJson(VaultFile f) => {
       'modifiedAt': f.modifiedAt.toIso8601String(),
       'deletedAt': f.deletedAt?.toIso8601String(),
       'hasThumb': f.hasThumb,
+      'isFavorite': f.isFavorite,
+      'lastOpenedAt': f.lastOpenedAt?.toIso8601String(),
+    };
+
+Map<String, Object?> versionToJson(FileVersion v) => {
+      'id': v.id,
+      'fileId': v.fileId,
+      'version': v.version,
+      'blobId': v.blobId,
+      'size': v.size,
+      'checksum': v.checksum,
+      'mime': v.mime,
+      'createdAt': v.createdAt.toIso8601String(),
+    };
+
+Map<String, Object?> auditToJson(AuditEntry a) => {
+      'id': a.id,
+      'deviceId': a.deviceId,
+      'action': a.action,
+      'targetId': a.targetId,
+      'targetName': a.targetName,
+      'detail': a.detail,
+      'createdAt': a.createdAt.toIso8601String(),
     };
 
 Map<String, Object?> deviceToJson(Device d) => {
@@ -238,10 +263,17 @@ class ApiHandlers {
   }
 
   Future<Response> createFolder(Request request) async {
+    final device = _device(request);
     final body = await _jsonBody(request);
     final parentId = body['parentId']?.toString() ?? AppConstants.rootFolderId;
     final name = body['name']?.toString() ?? '';
     final folder = vault.files.createFolder(parentId, name);
+    vault.auditAction(
+      deviceId: device.id,
+      action: 'folder.create',
+      targetId: folder.id,
+      targetName: folder.name,
+    );
     return ApiResponses.created({'item': fileToJson(folder)});
   }
 
@@ -253,6 +285,7 @@ class ApiHandlers {
     final size = (body['size'] as num?)?.toInt() ?? -1;
     final checksum = body['checksum']?.toString() ?? '';
     final mime = body['mime']?.toString();
+    final replaceFileId = body['replaceFileId']?.toString();
 
     Cipher.validateSha256(checksum);
     if (size < 0) {
@@ -260,6 +293,14 @@ class ApiHandlers {
     }
     final safeName = FileNames.sanitize(name);
     vault.files.requireFolder(parentId);
+    if (replaceFileId != null && replaceFileId.isNotEmpty) {
+      final target = vault.files.getById(replaceFileId);
+      if (target.isTrashed || target.isFolder) {
+        throw const ValidationException(
+            'Only live files can receive a new version.');
+      }
+    }
+    vault.enforceQuota(size);
 
     final uploadId = const Uuid().v4();
     final session = vault.uploads.create(
@@ -271,6 +312,9 @@ class ApiHandlers {
       tmpPath: '${AppConstants.tmpDirName}/$uploadId',
       mime: mime,
       deviceId: device.id,
+      replaceFileId: (replaceFileId != null && replaceFileId.isNotEmpty)
+          ? replaceFileId
+          : null,
     );
     return ApiResponses.created({
       'uploadId': session.id,
@@ -374,6 +418,32 @@ class ApiHandlers {
     vault.uploads.setStatus(session.id, UploadSessionStatus.completed);
     await tmpFile.delete().catchError((_) => tmpFile);
 
+    // Replace-upload: archive previous content, then point at the new blob.
+    if (session.replaceFileId != null) {
+      final target = vault.files.getById(session.replaceFileId!);
+      vault.versions.snapshot(
+        fileId: target.id,
+        blobId: target.blobId,
+        size: target.size,
+        checksum: target.checksum,
+        mime: target.mime,
+      );
+      final updated = vault.files.replaceContent(
+        id: target.id,
+        blobId: blob.id,
+        size: session.size,
+        checksum: session.expectedChecksum,
+        mime: session.mime,
+      );
+      unawaited(vault.generateThumbnail(updated));
+      vault.auditAction(
+        action: 'file.version.create',
+        targetId: updated.id,
+        targetName: updated.name,
+      );
+      return ApiResponses.created({'item': fileToJson(updated)});
+    }
+
     final file = vault.files.createFile(
       parentId: session.parentId,
       name: session.name,
@@ -384,6 +454,11 @@ class ApiHandlers {
     );
     // Fire and forget thumbnail generation; failures are logged, not fatal.
     unawaited(vault.generateThumbnail(file));
+    vault.auditAction(
+      action: 'file.upload',
+      targetId: file.id,
+      targetName: file.name,
+    );
     return ApiResponses.created({'item': fileToJson(file)});
   }
 
@@ -424,6 +499,7 @@ class ApiHandlers {
   }
 
   Future<Response> update(Request request, String id) async {
+    final device = _device(request);
     final body = await _jsonBody(request);
     var entry = vault.files.getById(id);
     if (entry.isTrashed) {
@@ -431,18 +507,212 @@ class ApiHandlers {
     }
     if (body.containsKey('name')) {
       final name = body['name']?.toString() ?? '';
+      final before = entry.name;
       entry = vault.files.rename(id, name);
+      vault.auditAction(
+        deviceId: device.id,
+        action: 'file.rename',
+        targetId: id,
+        targetName: entry.name,
+        detail: '$before -> ${entry.name}',
+      );
     }
     if (body.containsKey('parentId')) {
       final parentId = body['parentId']?.toString() ?? '';
       entry = vault.files.move(id, parentId);
+      vault.auditAction(
+        deviceId: device.id,
+        action: 'file.move',
+        targetId: id,
+        targetName: entry.name,
+      );
+    }
+    if (body.containsKey('isFavorite')) {
+      final raw = body['isFavorite'];
+      final value = raw == true || raw == 1 || raw == '1' || raw == 'true';
+      entry = vault.files.setFavorite(id, value);
+      vault.auditAction(
+        deviceId: device.id,
+        action: value ? 'file.star' : 'file.unstar',
+        targetId: id,
+        targetName: entry.name,
+      );
     }
     return ApiResponses.ok({'item': fileToJson(entry)});
   }
 
   Future<Response> delete(Request request, String id) async {
+    final device = _device(request);
+    String? name;
+    try {
+      name = vault.files.getById(id).name;
+    } catch (_) {}
     vault.files.softDelete(id);
+    vault.auditAction(
+      deviceId: device.id,
+      action: 'file.trash',
+      targetId: id,
+      targetName: name,
+    );
     return ApiResponses.ok();
+  }
+
+  Future<Response> listFavorites(Request request) async {
+    final items = vault.files.listFavorites();
+    return ApiResponses.ok({'items': items.map(fileToJson).toList()});
+  }
+
+  Future<Response> listRecent(Request request) async {
+    final limit =
+        int.tryParse(request.url.queryParameters['limit'] ?? '30') ?? 30;
+    final items = vault.files.listRecent(limit: limit);
+    return ApiResponses.ok({'items': items.map(fileToJson).toList()});
+  }
+
+  Future<Response> touchOpen(Request request, String id) async {
+    final entry = vault.files.getById(id);
+    if (entry.isTrashed) throw const NotFoundException('Item is in the trash.');
+    vault.files.touchOpened(id);
+    return ApiResponses.ok({'item': fileToJson(vault.files.getById(id))});
+  }
+
+  Future<Response> listVersions(Request request, String id) async {
+    vault.files.getById(id); // validate existence
+    final versions = vault.versions.listForFile(id);
+    return ApiResponses.ok({
+      'fileId': id,
+      'items': versions.map(versionToJson).toList(),
+    });
+  }
+
+  Future<Response> restoreVersion(Request request, String id, String version) async {
+    final device = _device(request);
+    final v = int.tryParse(version);
+    if (v == null) return ApiResponses.validation('Invalid version number.');
+    final current = vault.files.getById(id);
+    if (current.isTrashed || current.isFolder) {
+      throw const ValidationException('Only live files can be restored.');
+    }
+    final archived = vault.versions.getVersion(id, v);
+    if (archived == null) throw const NotFoundException('Version not found.');
+    if (archived.blobId == null) {
+      throw const NotFoundException('Version has no content.');
+    }
+    try {
+      vault.blobs.getById(archived.blobId!);
+    } catch (_) {
+      throw const NotFoundException('Version bytes are gone.');
+    }
+    // Snapshot current content first so restore stays reversible.
+    vault.versions.snapshot(
+      fileId: id,
+      blobId: current.blobId,
+      size: current.size,
+      checksum: current.checksum,
+      mime: current.mime,
+    );
+    final updated = vault.files.replaceContent(
+      id: id,
+      blobId: archived.blobId!,
+      size: archived.size,
+      checksum: archived.checksum ?? '',
+      mime: archived.mime,
+    );
+    unawaited(vault.generateThumbnail(updated));
+    vault.auditAction(
+      deviceId: device.id,
+      action: 'file.version.restore',
+      targetId: id,
+      targetName: updated.name,
+      detail: 'v$v',
+    );
+    return ApiResponses.ok({'item': fileToJson(updated)});
+  }
+
+  Future<Response> storageBreakdown(Request request) async {
+    final map = vault.files.breakdown();
+    return ApiResponses.ok({'breakdown': map});
+  }
+
+  Future<Response> activity(Request request) async {
+    final limit =
+        int.tryParse(request.url.queryParameters['limit'] ?? '50') ?? 50;
+    final items = vault.audit.recent(limit: limit);
+    return ApiResponses.ok({'items': items.map(auditToJson).toList()});
+  }
+
+  Future<Response> getSettings(Request request) async {
+    return ApiResponses.ok({
+      'trashRetentionDays': vault.settings.trashRetentionDays,
+      'deviceQuotaBytes': vault.settings.deviceQuotaBytes,
+      'tlsConfigured':
+          (vault.settings.tlsCertPath ?? '').isNotEmpty &&
+              (vault.settings.tlsKeyPath ?? '').isNotEmpty,
+    });
+  }
+
+  Future<Response> updateSettings(Request request) async {
+    final device = _device(request);
+    final body = await _jsonBody(request);
+    if (body.containsKey('trashRetentionDays')) {
+      final days = (body['trashRetentionDays'] as num?)?.toInt();
+      if (days == null || days < 0 || days > 3650) {
+        return ApiResponses.validation(
+            'trashRetentionDays must be 0..3650.');
+      }
+      vault.settings.trashRetentionDays = days;
+    }
+    if (body.containsKey('deviceQuotaBytes')) {
+      final quota = (body['deviceQuotaBytes'] as num?)?.toInt();
+      if (quota == null || quota < 0) {
+        return ApiResponses.validation('deviceQuotaBytes must be >= 0.');
+      }
+      vault.settings.deviceQuotaBytes = quota;
+    }
+    if (body.containsKey('tlsCertPath') || body.containsKey('tlsKeyPath')) {
+      final cert = body['tlsCertPath']?.toString() ?? '';
+      final key = body['tlsKeyPath']?.toString() ?? '';
+      if (cert.isEmpty && key.isEmpty) {
+        vault.settings.tlsPaths = null;
+      } else {
+        if (cert.isEmpty || key.isEmpty) {
+          return ApiResponses.validation(
+              'Both tlsCertPath and tlsKeyPath are required.');
+        }
+        if (!await File(cert).exists() || !await File(key).exists()) {
+          return ApiResponses.validation('TLS cert/key files not found.');
+        }
+        vault.settings.tlsPaths = (cert: cert, key: key);
+      }
+    }
+    vault.auditAction(deviceId: device.id, action: 'settings.update');
+    return ApiResponses.ok({
+      'trashRetentionDays': vault.settings.trashRetentionDays,
+      'deviceQuotaBytes': vault.settings.deviceQuotaBytes,
+      'tlsConfigured':
+          (vault.settings.tlsCertPath ?? '').isNotEmpty &&
+              (vault.settings.tlsKeyPath ?? '').isNotEmpty,
+    });
+  }
+
+  Future<Response> purgeExpiredTrash(Request request) async {
+    final device = _device(request);
+    final orphans = await _purgeExpired();
+    vault.auditAction(
+      deviceId: device.id,
+      action: 'trash.purge.manual',
+      detail: '${orphans.length} blob(s)',
+    );
+    return ApiResponses.ok({'purgedBlobs': orphans.length});
+  }
+
+  Future<List<Object>> _purgeExpired() async {
+    final days = vault.settings.trashRetentionDays;
+    if (days <= 0) return const [];
+    final cutoff = DateTime.now().subtract(Duration(days: days));
+    final orphans = vault.files.purgeTrashOlderThan(cutoff, vault.blobs);
+    await vault.deleteOrphanedBlobs(orphans);
+    return orphans;
   }
 
   Future<Response> search(Request request) async {
@@ -463,19 +733,40 @@ class ApiHandlers {
   }
 
   Future<Response> restore(Request request, String id) async {
+    final device = _device(request);
     final restored = vault.files.restore(id);
+    vault.auditAction(
+      deviceId: device.id,
+      action: 'file.restore',
+      targetId: id,
+      targetName: restored.name,
+    );
     return ApiResponses.ok({'item': fileToJson(restored)});
   }
 
   Future<Response> deletePermanent(Request request, String id) async {
+    final device = _device(request);
+    String? name;
+    try {
+      name = vault.files.getById(id).name;
+    } catch (_) {}
     final orphans = vault.files.permanentDelete(id, vault.blobs);
     await vault.deleteOrphanedBlobs(orphans);
+    vault.versions.deleteForFile(id);
+    vault.auditAction(
+      deviceId: device.id,
+      action: 'file.destroy',
+      targetId: id,
+      targetName: name,
+    );
     return ApiResponses.ok();
   }
 
   Future<Response> emptyTrash(Request request) async {
+    final device = _device(request);
     final orphans = vault.files.emptyTrash(vault.blobs);
     await vault.deleteOrphanedBlobs(orphans);
+    vault.auditAction(deviceId: device.id, action: 'trash.empty');
     return ApiResponses.ok();
   }
 
@@ -498,7 +789,13 @@ class ApiHandlers {
   }
 
   Future<Response> revokeDevice(Request request, String id) async {
+    final device = _device(request);
     vault.devices.revoke(id);
+    vault.auditAction(
+      deviceId: device.id,
+      action: 'device.revoke',
+      targetId: id,
+    );
     return ApiResponses.ok();
   }
 
@@ -596,6 +893,8 @@ Handler buildApiHandler({
     ..post('/api/v1/auth/logout', handlers.logout)
     ..post('/api/v1/pairing/start', handlers.pairingStart)
     ..get('/api/v1/files', handlers.listFiles)
+    ..get('/api/v1/files/favorites', handlers.listFavorites)
+    ..get('/api/v1/files/recent', handlers.listRecent)
     ..post('/api/v1/files/folder', handlers.createFolder)
     ..post('/api/v1/files/upload/start', handlers.uploadStart)
     ..post('/api/v1/files/upload/chunk', handlers.uploadChunk)
@@ -603,6 +902,10 @@ Handler buildApiHandler({
     ..post('/api/v1/files/upload/status', handlers.uploadStatus)
     ..get('/api/v1/files/<id>/content', handlers.download)
     ..get('/api/v1/files/<id>/thumb', handlers.thumb)
+    ..post('/api/v1/files/<id>/open', handlers.touchOpen)
+    ..get('/api/v1/files/<id>/versions', handlers.listVersions)
+    ..post('/api/v1/files/<id>/versions/<version>/restore',
+        handlers.restoreVersion)
     ..patch('/api/v1/files/<id>', handlers.update)
     ..delete('/api/v1/files/<id>', handlers.delete)
     ..get('/api/v1/search', handlers.search)
@@ -610,7 +913,12 @@ Handler buildApiHandler({
     ..post('/api/v1/trash/<id>/restore', handlers.restore)
     ..delete('/api/v1/trash/<id>', handlers.deletePermanent)
     ..delete('/api/v1/trash', handlers.emptyTrash)
+    ..post('/api/v1/trash/purge-expired', handlers.purgeExpiredTrash)
     ..get('/api/v1/storage/status', handlers.storageStatus)
+    ..get('/api/v1/storage/breakdown', handlers.storageBreakdown)
+    ..get('/api/v1/activity', handlers.activity)
+    ..get('/api/v1/settings', handlers.getSettings)
+    ..put('/api/v1/settings', handlers.updateSettings)
     ..get('/api/v1/devices', handlers.devices)
     ..post('/api/v1/devices/<id>/revoke', handlers.revokeDevice);
 

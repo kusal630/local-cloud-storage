@@ -22,9 +22,36 @@ A cross-platform local cloud storage application that turns local storage (exter
 | Search + sort + grid/list + filters | ✅ |
 | Bulk select + trash | ✅ |
 | Dark mode + responsive | ✅ |
-| TLS/HTTPS on LAN | 🔲 roadmap |
-| mDNS auto-discovery | 🔲 roadmap |
-| Favorites/Recent, versioning, persistent queue | 🔲 roadmap |
+| LAN auto-discovery (UDP beacon + Nearby list) | ✅ |
+| Starred + Recent | ✅ |
+| Replace-upload with version history + restore | ✅ |
+| Storage breakdown by type | ✅ |
+| Host activity log | ✅ |
+| Trash retention auto-purge + vault quota | ✅ |
+| Persistent transfers (survive restart) + speed/ETA | ✅ |
+| App PIN lock | ✅ |
+| HTTPS with your own cert (LAN TLS) | ✅ |
+| Desktop shortcuts (Ctrl+R, Ctrl+Shift+N, /) | ✅ |
+
+## Wave 2 notes
+
+- **Nearby nodes**: the host broadcasts a `localvault-v1` UDP beacon on port
+  8485 every 2 s. Client → Connect shows discovered nodes; tap to fill the URL.
+- **Versions**: uploading a file with an existing name offers Replace — the old
+  content is archived (keeps last 20) and restorable from Preview → Version history.
+- **Retention/quota**: Host Dashboard → Host Settings. Retention auto-purges trash
+  on server start (0 = forever); quota rejects oversized uploads with 409.
+- **Transfers**: queue persists across restarts (interrupted tasks become
+  retryable); live speed + ETA shown.
+- **PIN**: Settings → App PIN (4–8 digits, SHA-256 stored). Asked at startup.
+- **HTTPS**: generate a LAN cert once, then Host Settings → TLS paths:
+  ```bash
+  openssl req -x509 -newkey rsa:2048 -keyout lan.key -out lan.crt \
+    -days 825 -nodes -subj "/CN=$(hostname)" \
+    -addext "subjectAltName=IP:<HOST_LAN_IP>,DNS:$(hostname)"
+  ```
+  Restart the node to serve `https://`; on the client enable
+  “Trust self-signed HTTPS” when connecting. Plain HTTP stays the default.
 
 ## Architecture
 

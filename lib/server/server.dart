@@ -6,6 +6,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 
 import '../core/constants/app_constants.dart';
 import '../core/logging/app_logger.dart';
+import '../core/discovery/beacon.dart';
 import '../data/datasources/vault.dart';
 import 'middleware/auth_middleware.dart';
 import 'routes/api_router.dart';
@@ -43,9 +44,23 @@ class LocalVaultServer {
 
   bool get isRunning => _status == HostServerStatus.running;
 
+  /// True when serving HTTPS with a user-provided certificate.
+  bool _secure = false;
+  bool get isSecure => _secure;
+  String get scheme => _secure ? 'https' : 'http';
+
+  DiscoveryBeacon? _beacon;
+
   /// Starts the server on [preferredPort]; when busy, the next free port is
   /// chosen automatically and exposed through [port].
-  Future<int> start({int preferredPort = AppConstants.defaultPort}) async {
+  ///
+  /// When [certPath]/[keyPath] point at a PEM certificate + private key, the
+  /// server binds HTTPS instead of HTTP (bring-your-own-cert TLS for the LAN).
+  Future<int> start({
+    int preferredPort = AppConstants.defaultPort,
+    String? certPath,
+    String? keyPath,
+  }) async {
     if (isRunning) return _port!;
     _status = HostServerStatus.starting;
     try {
@@ -59,11 +74,41 @@ class LocalVaultServer {
       );
 
       final chosen = await _findFreePort(preferredPort);
-      _server = await shelf_io.serve(_handler!, InternetAddress.anyIPv4, chosen);
+      SecurityContext? tls;
+      final cert = certPath ?? vault.settings.tlsCertPath;
+      final key = keyPath ?? vault.settings.tlsKeyPath;
+      if (cert != null && cert.isNotEmpty && key != null && key.isNotEmpty) {
+        tls = SecurityContext()
+          ..useCertificateChain(cert)
+          ..usePrivateKey(key);
+        _secure = true;
+      }
+      _server = await shelf_io.serve(
+        _handler!,
+        InternetAddress.anyIPv4,
+        chosen,
+        securityContext: tls,
+      );
       _port = _server!.port;
       _status = HostServerStatus.running;
       final urls = await _localAddresses();
-      logInfo('LocalVault server listening on ${urls.map((u) => 'http://$u:$_port').join(', ')}');
+      logInfo('LocalVault server listening on ${urls.map((u) => '$scheme://$u:$_port').join(', ')}');
+      // Best-effort: purge trash past retention, then announce on the LAN.
+      try {
+        await vault.purgeExpiredTrash();
+      } catch (e) {
+        logWarn('Trash auto-purge failed: $e');
+      }
+      try {
+        _beacon = DiscoveryBeacon(
+          deviceName: vault.settings.hostDeviceName,
+          port: _port!,
+          secure: _secure,
+        );
+        await _beacon!.start();
+      } catch (e) {
+        logWarn('LAN discovery beacon failed: $e');
+      }
       return _port!;
     } catch (e, st) {
       _status = HostServerStatus.error;
@@ -90,11 +135,16 @@ class LocalVaultServer {
   }
 
   Future<void> stop() async {
+    try {
+      _beacon?.stop();
+    } catch (_) {}
+    _beacon = null;
     if (_server != null) {
       await _server!.close(force: true);
       _server = null;
     }
     _port = null;
+    _secure = false;
     _status = HostServerStatus.stopped;
     logInfo('LocalVault server stopped.');
   }
@@ -122,7 +172,7 @@ class LocalVaultServer {
     if (port == null) return null;
     final addresses = await _localAddresses();
     if (addresses.isEmpty) return null;
-    return 'http://${addresses.first}:$port';
+    return '$scheme://${addresses.first}:$port';
   }
 
   /// All reachable URLs (LAN IP + loopback).
@@ -131,9 +181,9 @@ class LocalVaultServer {
     if (port == null) return const [];
     final result = <String>[];
     for (final addr in await _localAddresses()) {
-      result.add('http://$addr:$port');
+      result.add('$scheme://$addr:$port');
     }
-    result.add('http://127.0.0.1:$port');
+    result.add('$scheme://127.0.0.1:$port');
     return result;
   }
 
