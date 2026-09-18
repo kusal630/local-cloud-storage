@@ -132,7 +132,8 @@ abstract class Cipher {
 
   static int _hexDigit(int code) {
     if (code >= 0x30 && code <= 0x39) return code - 0x30;
-    if (code >= 0x61 && code <= 0x66) return code - 0x37;
+    if (code >= 0x61 && code <= 0x66) return code - 0x57;
+    if (code >= 0x41 && code <= 0x46) return code - 0x37;
     throw const FormatException('Invalid hex digit');
   }
 

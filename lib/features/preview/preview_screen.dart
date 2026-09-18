@@ -14,6 +14,7 @@ import 'package:pdfx/pdfx.dart';
 import 'package:video_player/video_player.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/file_service.dart';
+import 'package:localvault/core/utils/docx_text.dart';
 import 'package:localvault/data/models/audit_entry.dart';
 import 'package:localvault/data/models/file_comment.dart';
 import 'package:localvault/data/models/file_version.dart';
@@ -87,6 +88,7 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
         file.mime?.startsWith('video/') == true;
     final isAudio =
         file.mime?.startsWith('audio/') == true;
+    final isDocx = DocxText.isDocx(file.name, file.mime);
 
     return Scaffold(
       appBar: AppBar(
@@ -133,7 +135,9 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
                   ? _PreviewVideo(file: file)
                   : isAudio
                       ? _PreviewAudio(file: file)
-                      : _PreviewMetadata(file: file),
+                      : isDocx
+                          ? _PreviewDocx(file: file)
+                          : _PreviewMetadata(file: file),
     );
   }
 
@@ -959,6 +963,79 @@ class _FileActivityCardState
           ],
         ),
       ),
+    );
+  }
+}
+
+/// .docx text preview (extracted locally, formatted like notes).
+class _PreviewDocx extends ConsumerStatefulWidget {
+  final VaultFile file;
+  const _PreviewDocx({required this.file});
+  @override
+  ConsumerState<_PreviewDocx> createState() => _PreviewDocxState();
+}
+
+class _PreviewDocxState extends ConsumerState<_PreviewDocx> {
+  String? _text;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final text = await ref
+          .read(fileServiceProvider)
+          .previewDocxText(widget.file.id);
+      if (!mounted) return;
+      setState(() => _text = text);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'unreadable');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return _PreviewMetadata(file: widget.file);
+    }
+    if (_text == null) {
+      return const LoadingIndicator(message: 'Reading document…');
+    }
+    final paras = _text!
+        .split('\n')
+        .where((p) => p.trim().isNotEmpty)
+        .take(80)
+        .toList();
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        const Center(
+          child: StatusPill(
+              label: 'DOCUMENT', color: Color(0xFF0E7C7B)),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final p in paras) ...[
+                  SelectableText(p,
+                      style:
+                          Theme.of(context).textTheme.bodyMedium),
+                  const SizedBox(height: 8),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

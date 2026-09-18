@@ -505,8 +505,79 @@ class FileRepository {
       'DELETE FROM comments WHERE file_id NOT IN (SELECT id FROM files)',
     );
     _db.raw.execute(
-      'DELETE FROM shares WHERE file_id NOT IN (SELECT id FROM files) AND file_id != \'\'',
+      "DELETE FROM shares WHERE file_id NOT IN (SELECT id FROM files) AND file_id != ''",
     );
+    try {
+      _db.raw.execute(
+        'DELETE FROM files_fts WHERE file_id NOT IN (SELECT id FROM files)',
+      );
+    } catch (_) {}
+  }
+
+  bool _ftsReady() {
+    try {
+      final rows = _db.raw.select(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='files_fts'",
+      );
+      return rows.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Indexes [body] for full-text search (replaces any previous entry).
+  void indexText(String fileId, String body) {
+    if (!_ftsReady()) return;
+    try {
+      _db.raw.execute('DELETE FROM files_fts WHERE file_id = ?', [fileId]);
+      final text = body.length > 200000 ? body.substring(0, 200000) : body;
+      _db.raw.execute(
+        'INSERT INTO files_fts (file_id, body) VALUES (?, ?)',
+        [fileId, text],
+      );
+    } catch (_) {}
+  }
+
+  void removeFromIndex(String id) {
+    if (!_ftsReady()) return;
+    try {
+      _db.raw.execute(
+        'DELETE FROM files_fts WHERE file_id = ? OR file_id IN (SELECT id FROM files WHERE parent_id = ?)',
+        [id, id],
+      );
+    } catch (_) {}
+  }
+
+  /// Full-text matches with excerpts, newest first.
+  List<({VaultFile file, String snippet})> searchContent(String query,
+      {int limit = 50}) {
+    if (!_ftsReady() || query.trim().isEmpty) return const [];
+    try {
+      // Quote each term to keep FTS syntax safe from user input.
+      final terms = query
+          .trim()
+          .split(RegExp(r'\s+'))
+          .where((t) => t.isNotEmpty)
+          .map((t) => '"${t.replaceAll('"', '')}"')
+          .join(' ');
+      if (terms.isEmpty) return const [];
+      final rows = _db.raw.select(
+        '''
+        SELECT f.*, snippet(files_fts, 1, '<b>', '</b>', '…', 12) AS excerpt
+        FROM files_fts
+        JOIN files f ON f.id = files_fts.file_id
+        WHERE files_fts MATCH ? AND f.deleted_at IS NULL AND f.id != ?
+        ORDER BY rank LIMIT ?
+        ''',
+        [terms, AppConstants.rootFolderId, limit.clamp(1, 100)],
+      );
+      return [
+        for (final row in rows)
+          (file: _fromRow(row), snippet: (row['excerpt'] as String?) ?? '')
+      ];
+    } catch (_) {
+      return const [];
+    }
   }
 
   List<String> _descendantBlobIds(String id) {    final rows = _db.raw.select(
@@ -729,6 +800,31 @@ class FileRepository {
       _copyInto(child, newId);
     }
     return getById(newId);
+  }
+
+  /// Recursive size + counts for a folder (folder-size details).
+  ({int bytes, int files, int folders}) folderSize(String id) {
+    final rows = _db.raw.select(
+      '''
+      WITH RECURSIVE subtree(id) AS (
+        SELECT id FROM files WHERE id = ?
+        UNION ALL
+        SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+      )
+      SELECT
+        SUM(CASE WHEN type = 'file' AND deleted_at IS NULL THEN size ELSE 0 END) AS bytes,
+        SUM(CASE WHEN type = 'file' AND deleted_at IS NULL THEN 1 ELSE 0 END) AS files,
+        SUM(CASE WHEN type = 'folder' AND deleted_at IS NULL THEN 1 ELSE 0 END) AS folders
+      FROM files WHERE id IN (SELECT id FROM subtree)
+      ''',
+      [id],
+    );
+    final row = rows.first;
+    return (
+      bytes: (row['bytes'] as int?) ?? 0,
+      files: (row['files'] as int?) ?? 0,
+      folders: (row['folders'] as int?) ?? 0,
+    );
   }
 
   String _newId() {

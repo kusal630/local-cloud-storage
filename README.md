@@ -36,7 +36,20 @@ upload, download, share, and back up.
 - **Privacy center** — auto-lock timer, Lock now, biometric unlock, one-tap wipe of on-device data
 - **Fluid motion** — staggered entrances, shimmer skeletons, Hero image transitions
 - **Rich previews** — PDF reader, video + audio playback (fetched over pinned TLS, played locally)
-## What you can do with it
+
+## What you can do with it (v1.6.0 everything wave)
+
+- **Mount as a drive** — WebDAV at `https(s)://<host>:<port>/dav` with your
+  username + password: Windows Explorer, Finder, Nautilus, any WebDAV client
+  (PROPFIND/GET/PUT/MKCOL/DELETE/MOVE/COPY/LOCK)
+- **Search inside files** — full-text search over notes/code/docs with excerpts
+  (SQLite FTS5, indexed on upload)
+- **Word documents** — .docx text extraction for previews and search
+- **Background backup** — Android WorkManager runs backup ~every 6h (opt-in)
+- **Folder details** — recursive size/file counts; lists remember scroll
+  position per folder
+- **Fixed**: password login actually verifies now (a hex-decoder bug meant it
+  never accepted any password — pairing was unaffected)## What you can do with it
 
 | Use | How |
 |---|---|

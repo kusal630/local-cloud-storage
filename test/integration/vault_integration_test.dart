@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -229,8 +230,7 @@ void main() {
     }
   });
 
-  test('Research wave: folder archive over HTTP', () async {
-    final storageDir = Directory(
+  test('Research wave: folder archive over HTTP', () async {    final storageDir = Directory(
         '${Directory.systemTemp.path}/lv_zip_${DateTime.now().millisecondsSinceEpoch}');
     await storageDir.create(recursive: true);
     LocalVaultServer? server;
@@ -406,6 +406,116 @@ void main() {
 
       vault.close();
     } finally {
+      await storageDir.delete(recursive: true);
+    }
+  });
+
+  test('WebDAV round-trip: MKCOL, PUT, PROPFIND, GET, LOCK, MOVE, DELETE',
+      () async {
+    final storageDir = Directory(
+        '${Directory.systemTemp.path}/lv_dav_${DateTime.now().millisecondsSinceEpoch}');
+    await storageDir.create(recursive: true);
+    LocalVaultServer? server;
+    try {
+      final vault = await Vault.create(storageDir);
+      await vault.completeSetup(password: 'testpass', deviceName: 'Test');
+      server = LocalVaultServer(vault: vault);
+      final port = await server.start();
+
+      final basic = base64Encode(utf8.encode('owner:testpass'));
+      Future<HttpClientResponse> dav(String method, String path,
+          {Map<String, String>? headers, String? body}) async {
+        final client = HttpClient();
+        final request =
+            await client.openUrl(method, Uri.parse('http://127.0.0.1:$port$path'));
+        request.headers.set('authorization', 'Basic $basic');
+        headers?.forEach(request.headers.set);
+        if (body != null) request.write(body);
+        final response = await request.close();
+        await response.drain();
+        return response;
+      }
+
+      Future<String> davBody(String method, String path,
+          {Map<String, String>? headers, String? body}) async {
+        final client = HttpClient();
+        final request =
+            await client.openUrl(method, Uri.parse('http://127.0.0.1:$port$path'));
+        request.headers.set('authorization', 'Basic $basic');
+        headers?.forEach(request.headers.set);
+        if (body != null) request.write(body);
+        final response = await request.close();
+        final text = await response.transform(utf8.decoder).join();
+        client.close();
+        return text;
+      }
+
+      // Unauthorized without credentials.
+      final anon = HttpClient();
+      final anonReq = await anon.openUrl(
+          'PROPFIND', Uri.parse('http://127.0.0.1:$port/dav/'));
+      final anonRes = await anonReq.close();
+      await anonRes.drain();
+      expect(anonRes.statusCode, 401);
+      anon.close();
+
+      expect((await dav('MKCOL', '/dav/Docs')).statusCode, 201);
+      expect(
+          (await dav('PUT', '/dav/Docs/n.txt', body: 'hello webdav'))
+              .statusCode,
+          201);
+      final listing = await davBody('PROPFIND', '/dav/Docs',
+          headers: {'depth': '1'});
+      expect(listing, contains('n.txt'));
+      expect(listing, contains('multistatus'));
+      final content =
+          await davBody('GET', '/dav/Docs/n.txt');
+      expect(content, 'hello webdav');
+
+      // Locking: write without token is rejected.
+      final lockRes = await dav('LOCK', '/dav/Docs/n.txt');
+      expect(lockRes.statusCode, 200);
+      final lockToken = lockRes.headers.value('lock-token') ?? '';
+      expect(lockToken, isNotEmpty);
+      final lockedPut =
+          await dav('PUT', '/dav/Docs/n.txt', body: 'blocked');
+      expect(lockedPut.statusCode, 423);
+      // Write with the token succeeds; then unlock.
+      expect(
+          (await dav('PUT', '/dav/Docs/n.txt',
+                  headers: {'if': ' (<$lockToken>)'}, body: 'unblocked'))
+              .statusCode,
+          204);
+      expect(
+          (await dav('UNLOCK', '/dav/Docs/n.txt',
+                  headers: {'lock-token': lockToken}))
+              .statusCode,
+          204);
+
+      // Move + copy.
+      expect(
+          (await dav('MOVE', '/dav/Docs/n.txt', headers: {
+            'destination': 'http://127.0.0.1:$port/dav/Docs/m.txt'
+          }))
+              .statusCode,
+          anyOf([201, 204]));
+      expect(await davBody('GET', '/dav/Docs/m.txt'), 'unblocked');
+      expect(
+          (await dav('COPY', '/dav/Docs/m.txt', headers: {
+            'destination': 'http://127.0.0.1:$port/dav/Docs/c.txt'
+          }))
+              .statusCode,
+          anyOf([201, 204]));
+      expect(await davBody('GET', '/dav/Docs/c.txt'), 'unblocked');
+      expect((await dav('DELETE', '/dav/Docs/c.txt')).statusCode, 204);
+
+      await server.stop();
+      server = null;
+      vault.close();
+    } finally {
+      try {
+        await server?.stop();
+      } catch (_) {}
       await storageDir.delete(recursive: true);
     }
   });

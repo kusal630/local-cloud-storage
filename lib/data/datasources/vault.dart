@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import '../../core/utils/disk_space_compat.dart';
@@ -9,6 +10,7 @@ import '../../core/constants/app_constants.dart';
 import '../../core/errors/app_exceptions.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/utils/cipher.dart';
+import '../../core/utils/docx_text.dart';
 import '../../core/utils/file_kinds.dart';
 import '../../core/utils/path_guard.dart';
 import '../database/vault_database.dart';
@@ -318,9 +320,63 @@ class Vault {
     );
   }
 
+  /// Indexes a file's text for full-text search (best-effort, text only).
+  Future<void> indexTextFile(String fileId) async {
+    try {
+      final file = files.getById(fileId);
+      if (file.isFolder ||
+          file.isTrashed ||
+          file.blobId == null ||
+          file.size > 2 * 1024 * 1024) {
+        return;
+      }
+      final isDocx = DocxText.isDocx(file.name, file.mime);
+      if (!isDocx && !_isIndexable(file.name, file.mime)) return;
+      if (!isDocx && file.size > 512 * 1024) return;
+      final blob = blobs.getById(file.blobId!);
+      final disk = blobFile(blob);
+      if (!await disk.exists()) return;
+      final bytes = await disk.readAsBytes();
+      final String text;
+      if (isDocx) {
+        final extracted = DocxText.extract(bytes);
+        if (extracted == null || extracted.isEmpty) return;
+        text = extracted;
+      } else {
+        final capped = bytes.length > 512 * 1024
+            ? bytes.sublist(0, 512 * 1024)
+            : bytes;
+        final decoded = utf8.decode(capped, allowMalformed: true);
+        final sample = decoded.length > 4000
+            ? decoded.substring(0, 4000)
+            : decoded;
+        final bad = RegExp(r'�').allMatches(sample).length;
+        if (bad > sample.length ~/ 20 && sample.isNotEmpty) return;
+        text = decoded;
+      }
+      files.indexText(fileId, text);
+    } catch (_) {}
+  }
+
+  bool _isIndexable(String name, String? mime) {
+    final m = (mime ?? '').toLowerCase();
+    if (m.startsWith('text/') ||
+        m.contains('json') ||
+        m.contains('xml') ||
+        m.contains('yaml')) {
+      return true;
+    }
+    const exts = {
+      'txt', 'md', 'csv', 'log', 'json', 'yaml', 'yml', 'xml', 'html',
+      'css', 'js', 'ts', 'dart', 'py', 'rs', 'go', 'java', 'kt', 'c',
+      'h', 'cpp', 'sh', 'toml', 'ini', 'cfg', 'gradle', 'sql', 'r',
+    };
+    final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    return exts.contains(ext);
+  }
+
   /// Records a data mutation (bumps sync revision + audit entry).
-  void mutated({
-    String? deviceId,
+  void mutated({    String? deviceId,
     required String action,
     String? targetId,
     String? targetName,

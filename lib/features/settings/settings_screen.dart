@@ -6,6 +6,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:localvault/app/app.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/pin_store.dart';
+import 'package:localvault/client/services/backup_service.dart';
 import 'package:localvault/widgets/common.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -399,6 +400,17 @@ class _BackupSection extends ConsumerWidget {
               .read(backupServiceProvider)
               .setOrganizeByMonth(v),
         ),
+        if (BackupService.supportsBackground)
+          SwitchListTile(
+            secondary: const Icon(Icons.bedtime_rounded),
+            title: const Text('Background backup'),
+            subtitle: const Text(
+                'System runs backup roughly every 6 hours'),
+            value: backup.backgroundEnabled,
+            onChanged: (v) => ref
+                .read(backupServiceProvider)
+                .setBackgroundEnabled(v),
+          ),
         for (final src in backup.sources)
           ListTile(
             dense: true,

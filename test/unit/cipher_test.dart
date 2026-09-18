@@ -63,6 +63,17 @@ void main() {
       expect(await Cipher.verifyPassword('wrongpassword', hash), isFalse);
     });
 
+    test('verifyPassword returns true for the correct password', () async {
+      final hash = await Cipher.hashPassword('correct horse');
+      expect(await Cipher.verifyPassword('correct horse', hash), isTrue);
+      // Repeat: salts differ every time, verification must still pass.
+      for (var i = 0; i < 3; i++) {
+        final h = await Cipher.hashPassword('s3cret!');
+        expect(await Cipher.verifyPassword('s3cret!', h), isTrue);
+        expect(await Cipher.verifyPassword('s3cret?', h), isFalse);
+      }
+    });
+
     test('verifyPassword returns false for invalid encoded string', () async {
       expect(await Cipher.verifyPassword('anything', 'invalid'), isFalse);
       expect(

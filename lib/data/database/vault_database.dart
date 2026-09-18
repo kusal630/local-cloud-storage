@@ -153,6 +153,15 @@ class VaultDatabase {
     _db.execute('''
       CREATE INDEX IF NOT EXISTS idx_shares_file ON shares(file_id);
     ''');
+    try {
+      _db.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+          file_id UNINDEXED, body, tokenize = 'unicode61'
+        );
+      ''');
+    } catch (_) {
+      // FTS5 unavailable in this SQLite build — content search degrades.
+    }
     _db.execute('''
       CREATE TABLE IF NOT EXISTS comments (
         id         TEXT PRIMARY KEY,

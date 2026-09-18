@@ -15,6 +15,7 @@ import package_info_plus
 import pdfx
 import shared_preferences_foundation
 import video_player_avfoundation
+import workmanager_apple
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   AudioplayersDarwinPlugin.register(with: registry.registrar(forPlugin: "AudioplayersDarwinPlugin"))
@@ -27,4 +28,5 @@ func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   PdfxPlugin.register(with: registry.registrar(forPlugin: "PdfxPlugin"))
   SharedPreferencesPlugin.register(with: registry.registrar(forPlugin: "SharedPreferencesPlugin"))
   VideoPlayerPlugin.register(with: registry.registrar(forPlugin: "VideoPlayerPlugin"))
+  WorkmanagerPlugin.register(with: registry.registrar(forPlugin: "WorkmanagerPlugin"))
 }

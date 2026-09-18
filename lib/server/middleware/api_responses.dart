@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:shelf/shelf.dart';
 
@@ -56,6 +57,67 @@ abstract class ApiResponses {
 
   static Response internal([String message = 'Internal server error.']) =>
       error(500, 'INTERNAL', message);
+
+  /// File download with single-range support (shared by REST + WebDAV).
+  static Response rangedFile(
+    File file,
+    int length,
+    String? mimeType,
+    String name,
+    String? rangeHeader, {
+    bool attachment = true,
+  }) {
+    final headers = <String, Object>{
+      'accept-ranges': 'bytes',
+      'content-type': mimeType ?? 'application/octet-stream',
+    };
+    if (attachment) {
+      headers['content-disposition'] =
+          'attachment; filename="${_escape(name)}"';
+    }
+    if (rangeHeader == null || rangeHeader.isEmpty) {
+      headers['content-length'] = '$length';
+      return Response(200, body: file.openRead(), headers: headers);
+    }
+    final match =
+        RegExp(r'^bytes=(\d*)-(\d*)$').firstMatch(rangeHeader.trim());
+    if (match == null) {
+      headers['content-range'] = 'bytes */$length';
+      return Response(416, headers: headers, body: '');
+    }
+    int? start =
+        match.group(1)!.isEmpty ? null : int.tryParse(match.group(1)!);
+    int? end = match.group(2)!.isEmpty ? null : int.tryParse(match.group(2)!);
+    if (start == null && end == null) {
+      headers['content-range'] = 'bytes */$length';
+      return Response(416, headers: headers, body: '');
+    }
+    if (start == null) {
+      final suffix = end!;
+      if (suffix <= 0) {
+        headers['content-range'] = 'bytes */$length';
+        return Response(416, headers: headers, body: '');
+      }
+      start = (length - suffix).clamp(0, length);
+      end = length - 1;
+    }
+    if (end == null || end >= length) {
+      end = length - 1;
+    }
+    if (start > end || start >= length) {
+      headers['content-range'] = 'bytes */$length';
+      return Response(416, headers: headers, body: '');
+    }
+    headers['content-range'] = 'bytes $start-$end/$length';
+    headers['content-length'] = '${end - start + 1}';
+    return Response(206,
+        body: file.openRead(start, end + 1), headers: headers);
+  }
+
+  static String _escape(String value) => value
+      .replaceAll('"', r'\"')
+      .replaceAll('\n', '')
+      .replaceAll('\r', '');
 }
 
 /// Wraps a handler and converts [AppException]s into proper HTTP responses.

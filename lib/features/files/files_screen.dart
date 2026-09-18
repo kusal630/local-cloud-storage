@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:localvault/client/services/file_service.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:localvault/app/providers.dart';
@@ -97,6 +98,121 @@ class _GridThumbState extends ConsumerState<_GridThumb> {
   }
 }
 
+/// Combined name + full-text search results.
+class _SearchResults extends StatelessWidget {
+  const _SearchResults({
+    required this.results,
+    required this.hits,
+    required this.offlineIds,
+    required this.onOpenFolder,
+    required this.onShowMenu,
+    required this.onToggleSelect,
+    required this.selectionMode,
+    required this.selected,
+  });
+
+  final List<VaultFile> results;
+  final List<ContentHit> hits;
+  final Set<String> offlineIds;
+  final void Function(VaultFile folder) onOpenFolder;
+  final void Function(VaultFile file) onShowMenu;
+  final void Function(String id) onToggleSelect;
+  final bool selectionMode;
+  final Set<String> selected;
+
+  String _plain(String snippet) =>
+      snippet.replaceAll('<b>', '').replaceAll('</b>', '');
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      children: [
+        Padding(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            children: [
+              Icon(Icons.travel_explore_rounded,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 6),
+              Text('Names (${results.length})',
+                  style: Theme.of(context).textTheme.labelMedium),
+            ],
+          ),
+        ),
+        for (final file in results)
+          Card(
+            margin:
+                const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+            child: ListTile(
+              leading: VaultFileIcon(
+                  name: file.name, isFolder: file.isFolder),
+              title: Text(file.name,
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: file.isFolder
+                  ? null
+                  : Text(formatBytes(file.size)),
+              selected: selected.contains(file.id),
+              onTap: () {
+                if (selectionMode) {
+                  onToggleSelect(file.id);
+                } else if (file.isFolder) {
+                  onOpenFolder(file);
+                } else {
+                  context.push('/client/preview/${file.id}');
+                }
+              },
+              onLongPress: () => onShowMenu(file),
+            ),
+          ),
+        if (hits.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 12, 8, 4),
+            child: Row(
+              children: [
+                Icon(Icons.text_snippet_rounded,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 6),
+                Text('Inside files (${hits.length})',
+                    style:
+                        Theme.of(context).textTheme.labelMedium),
+              ],
+            ),
+          ),
+          for (final hit in hits)
+            Card(
+              margin: const EdgeInsets.symmetric(
+                  horizontal: 4, vertical: 3),
+              child: ListTile(
+                leading: VaultFileIcon(
+                    name: hit.file.name,
+                    isFolder: hit.file.isFolder),
+                title: Text(hit.file.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                subtitle: Text(_plain(hit.snippet),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis),
+                onTap: () {
+                  if (hit.file.isFolder) {
+                    onOpenFolder(hit.file);
+                  } else {
+                    context.push(
+                        '/client/preview/${hit.file.id}');
+                  }
+                },
+                onLongPress: () => onShowMenu(hit.file),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
 /// Live-sync status: green when the host revision was checked recently.
 class _SyncPill extends StatelessWidget {
   const _SyncPill({required this.syncedAt});
@@ -140,6 +256,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   int? _syncVersion;
   DateTime? _syncedAt;
   List<VaultFile>? _serverResults;
+  List<ContentHit> _contentHits = [];
   bool _searching = false;
   int _syncFails = 0;
   bool get _offline => _syncFails >= 2;
@@ -340,6 +457,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     setState(() {
       _query = value;
       _serverResults = null;
+      _contentHits = [];
       _searching = false;
     });
     _searchTimer?.cancel();
@@ -349,12 +467,18 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       if (!mounted) return;
       setState(() => _searching = true);
       try {
-        final results = await ref.read(fileServiceProvider).search(q);
+        final svc = ref.read(fileServiceProvider);
+        final results = await svc.search(q);
+        List<ContentHit> hits = const [];
+        try {
+          hits = await svc.searchContent(q);
+        } catch (_) {}
         if (!mounted) return;
         // Drop stale responses.
         if (_searchController.text.trim() != q) return;
         setState(() {
           _serverResults = results;
+          _contentHits = hits;
           _searching = false;
         });
         async.unawaited(_rememberQuery(q));
@@ -493,6 +617,14 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                   _navigateToFolder(file);
                 },
               ),
+            ListTile(
+              leading: const Icon(Icons.info_outline_rounded),
+              title: const Text('Details'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showDetails(file);
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.edit_rounded),
               title: const Text('Rename'),
@@ -989,6 +1121,69 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   }
   /// Optimistic star: the icon flips instantly (peak-end rule); the rare
   /// failure rolls back with a quiet message.
+  Future<void> _showDetails(VaultFile file) async {
+    FolderSize? size;
+    if (file.isFolder && !_typeFilter.startsWith('tag:')) {
+      try {
+        size = await ref.read(fileServiceProvider).folderSize(file.id);
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(file.name,
+            maxLines: 2, overflow: TextOverflow.ellipsis),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _detailRow('Type', file.isFolder ? 'Folder' : 'File'),
+            if (!file.isFolder) ...[
+              _detailRow('Size', formatBytes(file.size)),
+              _detailRow('MIME', file.mime ?? 'Unknown'),
+            ] else if (size != null) ...[
+              _detailRow('Contents size', formatBytes(size.bytes)),
+              _detailRow('Files', '${size.files}'),
+              _detailRow('Subfolders', '${size.folders}'),
+            ],
+            _detailRow('Modified', formatDateTime(file.modifiedAt)),
+            if (file.tags.isNotEmpty)
+              _detailRow(
+                  'Tags', file.tags.map((t) => '#$t').join(' ')),
+            if (file.isFavorite)
+              _detailRow('Starred', 'Yes'),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+                width: 110,
+                child: Text(label,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .outline))),
+            Expanded(child: Text(value)),
+          ],
+        ),
+      );
+
   Future<void> _toggleFavorite(VaultFile file) async {
     HapticFeedback.lightImpact();
     final want = !file.isFavorite;
@@ -1628,7 +1823,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     final searching = _query.trim().length >= 2;
     if (searching && _serverResults != null) {
       final results = _serverResults!;
-      if (results.isEmpty) {
+      if (results.isEmpty && _contentHits.isEmpty) {
         return EmptyState(
           icon: Icons.search_off_rounded,
           title: 'No matches in vault',
@@ -1642,24 +1837,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           ),
         );
       }
-      return Column(
-        children: [
-          Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Row(
-              children: [
-                Icon(Icons.travel_explore_rounded,
-                    size: 16,
-                    color: Theme.of(context).colorScheme.primary),
-                const SizedBox(width: 6),
-                Text('Across vault (${results.length})',
-                    style: Theme.of(context).textTheme.labelMedium),
-              ],
-            ),
-          ),
-          Expanded(child: _buildList(results, offlineIds)),
-        ],
+      return _SearchResults(
+        results: results,
+        hits: _contentHits,
+        offlineIds: offlineIds,
+        onOpenFolder: _navigateToFolder,
+        onShowMenu: _showItemMenu,
+        onToggleSelect: _toggleSelect,
+        selectionMode: _selectionMode,
+        selected: _selected,
       );
     }
     if (_loading) return const SkeletonList();
@@ -1749,6 +1935,8 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
 
   Widget _buildList(List<VaultFile> visible, Set<String> offlineIds) =>
       ListView.builder(
+        // Remembers scroll position per folder (back nav feels instant).
+        key: PageStorageKey('files-list-${ref.read(currentFolderProvider)}'),
         itemCount: visible.length,
         padding: const EdgeInsets.symmetric(horizontal: 8),
         itemBuilder: (context, i) {
@@ -1879,6 +2067,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                         ? 3
                         : 2;
         return GridView.builder(
+          key: PageStorageKey('files-grid-${ref.read(currentFolderProvider)}'),
           padding: const EdgeInsets.all(12),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: cols,

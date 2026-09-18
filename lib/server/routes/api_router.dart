@@ -27,6 +27,7 @@ import '../middleware/api_responses.dart';
 import '../middleware/auth_middleware.dart';
 import '../services/pairing_service.dart';
 import '../services/token_service.dart';
+import 'webdav_router.dart';
 
 /// Set when the API handler is built (isolate boot) — basis for uptime.
 final DateTime _bootTime = DateTime.now();
@@ -475,6 +476,7 @@ class ApiHandlers {
         mime: session.mime,
       );
       unawaited(vault.generateThumbnail(updated));
+      unawaited(vault.indexTextFile(updated.id));
       vault.mutated(
         action: 'file.version.create',
         targetId: updated.id,
@@ -493,6 +495,7 @@ class ApiHandlers {
     );
     // Fire and forget thumbnail generation; failures are logged, not fatal.
     unawaited(vault.generateThumbnail(file));
+    unawaited(vault.indexTextFile(file.id));
     vault.mutated(
       action: 'file.upload',
       targetId: file.id,
@@ -765,6 +768,20 @@ class ApiHandlers {
     });
   }
 
+  Future<Response> folderSize(Request request, String id) async {
+    final entry = vault.files.getById(id);
+    if (entry.isTrashed || !entry.isFolder) {
+      throw const ValidationException('Only live folders have sizes.');
+    }
+    final size = vault.files.folderSize(id);
+    return ApiResponses.ok({
+      'id': id,
+      'bytes': size.bytes,
+      'files': size.files,
+      'folders': size.folders,
+    });
+  }
+
   Future<Response> syncVersion(Request request) async {
     return ApiResponses.ok({'version': vault.settings.dataVersion});
   }
@@ -1018,6 +1035,21 @@ class ApiHandlers {
     return ApiResponses.ok({
       'query': q,
       'items': items.map(fileToJson).toList(),
+    });
+  }
+
+  Future<Response> searchContent(Request request) async {
+    final q = request.url.queryParameters['q']?.trim() ?? '';
+    if (q.isEmpty || q.length > 200) {
+      return ApiResponses.ok({'items': <Object?>[]});
+    }
+    final hits = vault.files.searchContent(q);
+    return ApiResponses.ok({
+      'query': q,
+      'items': [
+        for (final h in hits)
+          {...fileToJson(h.file), 'snippet': h.snippet}
+      ],
     });
   }
 
@@ -1437,55 +1469,7 @@ class ApiHandlers {
     String name,
     String? rangeHeader,
   ) {
-    const baseHeaders = {
-      'accept-ranges': 'bytes',
-      'content-type': 'application/octet-stream',
-    };
-    final headers = Map<String, Object>.of(baseHeaders);
-    final mime = mimeType ?? 'application/octet-stream';
-    headers['content-type'] = mime;
-    headers['content-disposition'] = 'attachment; filename="${_escape(name)}"';
-
-    if (rangeHeader == null || rangeHeader.isEmpty) {
-      headers['content-length'] = '$length';
-      return Response(200,
-          body: file.openRead(), headers: headers);
-    }
-
-    final match = RegExp(r'^bytes=(\d*)-(\d*)$').firstMatch(rangeHeader.trim());
-    if (match == null) {
-      headers['content-range'] = 'bytes */$length';
-      return Response(416, headers: headers, body: '');
-    }
-    int? start = match.group(1)!.isEmpty ? null : int.tryParse(match.group(1)!);
-    int? end = match.group(2)!.isEmpty ? null : int.tryParse(match.group(2)!);
-
-    if (start == null && end == null) {
-      headers['content-range'] = 'bytes */$length';
-      return Response(416, headers: headers, body: '');
-    }
-    if (start == null) {
-      // suffix range: last N bytes
-      final suffix = end!;
-      if (suffix <= 0) {
-        headers['content-range'] = 'bytes */$length';
-        return Response(416, headers: headers, body: '');
-      }
-      start = (length - suffix).clamp(0, length);
-      end = length - 1;
-    }
-    if (end == null || end >= length) {
-      end = length - 1;
-    }
-    if (start > end || start >= length) {
-      headers['content-range'] = 'bytes */$length';
-      return Response(416, headers: headers, body: '');
-    }
-
-    headers['content-range'] = 'bytes $start-$end/$length';
-    headers['content-length'] = '${end - start + 1}';
-    return Response(206,
-        body: file.openRead(start, end + 1), headers: headers);
+    return ApiResponses.rangedFile(file, length, mimeType, name, rangeHeader);
   }
 
   static String _escape(String value) => value
@@ -1534,6 +1518,7 @@ Handler buildApiHandler({
     ..post('/api/v1/files/upload/status', handlers.uploadStatus)
     ..get('/api/v1/files/<id>/content', handlers.download)
     ..get('/api/v1/files/<id>/archive', handlers.downloadArchive)
+    ..get('/api/v1/files/<id>/size', handlers.folderSize)
     ..get('/api/v1/files/<id>/thumb', handlers.thumb)
     ..post('/api/v1/files/<id>/open', handlers.touchOpen)
     ..get('/api/v1/files/<id>/versions', handlers.listVersions)
@@ -1550,6 +1535,7 @@ Handler buildApiHandler({
     ..post('/api/v1/files/<id>/copy', handlers.copyItem)
     ..delete('/api/v1/files/<id>', handlers.delete)
     ..get('/api/v1/search', handlers.search)
+    ..get('/api/v1/search/content', handlers.searchContent)
     ..get('/api/v1/trash', handlers.listTrash)
     ..post('/api/v1/trash/<id>/restore', handlers.restore)
     ..delete('/api/v1/trash/<id>', handlers.deletePermanent)
@@ -1579,6 +1565,7 @@ Handler buildApiHandler({
 
   return Cascade()
       .add(publicPipeline)
+      .add(buildWebdavHandler(vault: vault))
       .add(protectedPipeline)
       .add((Request _) async => Response.notFound('Not found.'))
       .handler;

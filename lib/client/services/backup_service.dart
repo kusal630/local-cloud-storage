@@ -4,7 +4,9 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:workmanager/workmanager.dart';
 
+import 'backup_worker.dart';
 import 'file_service.dart';
 import 'transfer_manager.dart';
 
@@ -30,6 +32,9 @@ class BackupService extends ChangeNotifier {
   static const _lastScannedKey = 'backup_last_scanned';
   static const _ignoresKey = 'backup_ignore_patterns';
   static const _organizeKey = 'backup_organize_month';
+  static const _bgKey = 'backup_bg_enabled';
+  static const bgTaskName = 'localvault-backup';
+  static const bgUniqueName = 'localvault-backup-periodic';
 
   /// Files larger than this are skipped (500 MB).
   static const int maxFileBytes = 500 * 1024 * 1024;
@@ -42,6 +47,7 @@ class BackupService extends ChangeNotifier {
   DateTime? lastRun;
   int lastAdded = 0;
   int lastScanned = 0;
+  bool backgroundEnabled = false;
   /// Syncthing-style ignore substrings (`*` wildcard), comma-separated in UI.
   List<String> ignorePatterns = [];
   /// When true, uploads land in `Auto Backup/<device>/2026-09` by file date.
@@ -91,6 +97,7 @@ class BackupService extends ChangeNotifier {
           .where((s) => s.isNotEmpty)
           .toList();
       organizeByMonth = prefs.getBool(_organizeKey) ?? true;
+      backgroundEnabled = prefs.getBool(_bgKey) ?? false;
       final last = prefs.getString(_lastRunKey);
       lastRun = last == null ? null : DateTime.tryParse(last);
       lastAdded = prefs.getInt(_lastAddedKey) ?? 0;
@@ -140,6 +147,34 @@ class BackupService extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_organizeKey, value);
+    } catch (_) {}
+  }
+
+  static bool get supportsBackground =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
+  /// Enables periodic background backup (Android WorkManager / iOS refresh).
+  /// Runs roughly every 6 hours while the OS allows it.
+  Future<void> setBackgroundEnabled(bool value) async {
+    if (value && !supportsBackground) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_bgKey, value);
+      if (value) {
+        await Workmanager().initialize(backupCallbackDispatcher);
+        await Workmanager().registerPeriodicTask(
+          bgUniqueName,
+          bgTaskName,
+          frequency: const Duration(hours: 6),
+          constraints: Constraints(networkType: NetworkType.connected),
+        );
+      } else {
+        try {
+          await Workmanager().cancelByUniqueName(bgUniqueName);
+        } catch (_) {}
+      }
+      backgroundEnabled = value;
+      notifyListeners();
     } catch (_) {}
   }
 

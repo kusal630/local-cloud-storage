@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import '../../core/errors/app_exceptions.dart';
+import '../../core/utils/docx_text.dart';
 import '../../data/models/audit_entry.dart';
 import '../../data/models/device.dart';
 import '../../data/models/file_comment.dart';
@@ -36,6 +38,20 @@ class DuplicateGroup {
   final int size;
   final int wastedBytes;
   final List<DuplicateFile> files;
+}
+
+class ContentHit {
+  ContentHit({required this.file, required this.snippet});
+  final VaultFile file;
+  final String snippet;
+}
+
+class FolderSize {
+  FolderSize(
+      {required this.bytes, required this.files, required this.folders});
+  final int bytes;
+  final int files;
+  final int folders;
 }
 
 class HostSettings {
@@ -149,6 +165,21 @@ class FileService {
     }
   }
 
+  Future<List<ContentHit>> searchContent(String query) async {
+    try {
+      final response = await _dio.get('/search/content',
+          queryParameters: {'q': query});
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return [
+        for (final m in items)
+          ContentHit(file: _parseFile(m), snippet: m['snippet'] as String? ?? '')
+      ];
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
   Future<VaultFile> setTags(String id, List<String> tags) async {
     try {
       final response =
@@ -253,6 +284,20 @@ class FileService {
                 .toList(),
           )
       ];
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<FolderSize> folderSize(String folderId) async {
+    try {
+      final response = await _dio.get('/files/$folderId/size');
+      final data = LocalVaultApi.decodeData(response);
+      return FolderSize(
+        bytes: (data['bytes'] as num).toInt(),
+        files: (data['files'] as num).toInt(),
+        folders: (data['folders'] as num).toInt(),
+      );
     } on DioException catch (e) {
       throw LocalVaultApi.mapError(e);
     }
@@ -732,11 +777,16 @@ class FileService {
   }
 
   Future<List<int>> downloadBytes(String fileId,
-      {CancelToken? cancelToken}) async {
+      {CancelToken? cancelToken, int? maxBytes}) async {
     try {
       final response = await _dio.get(
         '/files/$fileId/content',
-        options: Options(responseType: ResponseType.bytes),
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: {
+            if (maxBytes != null) 'Range': 'bytes=0-${maxBytes - 1}',
+          },
+        ),
         cancelToken: cancelToken,
       );
       return (response.data as List).cast<int>();
@@ -776,6 +826,20 @@ class FileService {
     } on DioException catch (e) {
       throw LocalVaultApi.mapError(e);
     }
+  }
+
+  /// Extracted .docx text for preview (capped at 10 MB downloads).
+  Future<String> previewDocxText(String fileId) async {
+    final bytes =
+        await downloadBytes(fileId, maxBytes: 10 * 1024 * 1024);
+    if (bytes.length > 10 * 1024 * 1024) {
+      throw const ApiException(413, 'Document too large to preview.');
+    }
+    final text = DocxText.extract(bytes);
+    if (text == null || text.isEmpty) {
+      throw const ApiException(422, 'Could not read document text.');
+    }
+    return text.length > 200000 ? text.substring(0, 200000) : text;
   }
 
   /// True for text/code that renders well in the built-in text preview.
