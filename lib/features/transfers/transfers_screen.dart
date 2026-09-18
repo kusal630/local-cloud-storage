@@ -11,6 +11,8 @@ class TransfersScreen extends ConsumerStatefulWidget {
 }
 
 class _TransfersScreenState extends ConsumerState<TransfersScreen> {
+  int _celebratedDone = 0;
+
   @override
   void initState() {
     super.initState();
@@ -24,6 +26,29 @@ class _TransfersScreenState extends ConsumerState<TransfersScreen> {
     final manager = ref.watch(transferManagerProvider);
     final tasks = manager.tasks;
     final colors = Theme.of(context).colorScheme;
+    final done = tasks
+        .where((t) =>
+            t.status == TransferStatus.completed ||
+            t.status == TransferStatus.failed)
+        .length;
+    final busy = tasks.any((t) =>
+        t.status == TransferStatus.running ||
+        t.status == TransferStatus.queued);
+    // Peak-end rule: mark the finish line, not just the progress.
+    if (tasks.isNotEmpty && !busy && done > _celebratedDone) {
+      _celebratedDone = done;
+      final failed =
+          tasks.where((t) => t.status == TransferStatus.failed).length;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(failed == 0
+                  ? 'All transfers complete.'
+                  : 'Transfers finished with $failed failure(s).')),
+        );
+      });
+    }
 
     return Scaffold(
       appBar: AppBar(

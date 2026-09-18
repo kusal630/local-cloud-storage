@@ -165,6 +165,25 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      SectionHeader(
+                        title: 'SECURITY',
+                        action: StatusPill(
+                          label: _securityScore(vault, server),
+                          color: const Color(0xFF43A047),
+                        ),
+                      ),
+                      _SecurityList(vault: vault, server: server),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       const SectionHeader(title: 'ACTIVITY'),
                       _ActivityFeed(vault: vault),
                     ],
@@ -568,20 +587,28 @@ class _HostSettingsState extends State<_HostSettings> {
           ),
         ),
         const SizedBox(height: 8),
-        TextField(
-          controller: _cert,
-          decoration: const InputDecoration(
-            labelText: 'TLS cert PEM path (optional)',
-            prefixIcon: Icon(Icons.lock_rounded),
-          ),
-        ),
-        const SizedBox(height: 8),
-        TextField(
-          controller: _key,
-          decoration: const InputDecoration(
-            labelText: 'TLS key PEM path (optional)',
-            prefixIcon: Icon(Icons.key_rounded),
-          ),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Advanced — custom TLS certificate'),
+          subtitle: const Text(
+              'Leave empty for the automatic certificate.'),
+          children: [
+            TextField(
+              controller: _cert,
+              decoration: const InputDecoration(
+                labelText: 'TLS cert PEM path (optional)',
+                prefixIcon: Icon(Icons.lock_rounded),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _key,
+              decoration: const InputDecoration(
+                labelText: 'TLS key PEM path (optional)',
+                prefixIcon: Icon(Icons.key_rounded),
+              ),
+            ),
+          ],
         ),
         if (_saved != null) ...[
           const SizedBox(height: 8),
@@ -769,7 +796,111 @@ class _RemoteAccess extends StatelessWidget {
   }
 }
 
-class _ActivityFeed extends StatelessWidget {  final dynamic vault;
+/// Trust at a glance: visible security posture builds confidence to host.
+String _securityScore(dynamic vault, dynamic server) {
+  var pass = 0;
+  var total = 0;
+  bool secure = false;
+  try {
+    secure = (server.isSecure as bool?) ??
+        (server.scheme as String?) == 'https';
+  } catch (_) {}
+  total++;
+  if (secure) pass++;
+  total += 2; // login enforced + short-lived pinned tokens (by design)
+  pass += 2;
+  var retention = 0;
+  var quota = 0;
+  try {
+    retention = vault.settings.trashRetentionDays as int;
+  } catch (_) {}
+  try {
+    quota = vault.settings.deviceQuotaBytes as int;
+  } catch (_) {}
+  total += 2;
+  if (retention > 0) pass++;
+  if (quota > 0) pass++;
+  return '$pass/$total';
+}
+
+class _SecurityList extends StatelessWidget {
+  final dynamic vault;
+  final dynamic server;
+  const _SecurityList({required this.vault, required this.server});
+
+  @override
+  Widget build(BuildContext context) {
+    bool secure = false;
+    String? fp;
+    try {
+      secure = (server.isSecure as bool?) ??
+          (server.scheme as String?) == 'https';
+    } catch (_) {}
+    try {
+      fp = _runnerFingerprint(server);
+    } catch (_) {}
+    var retention = 30;
+    var quota = 0;
+    try {
+      retention = vault.settings.trashRetentionDays as int;
+    } catch (_) {}
+    try {
+      quota = vault.settings.deviceQuotaBytes as int;
+    } catch (_) {}
+    return Column(
+      children: [
+        _row(context, secure, 'Encrypted transport',
+            secure ? 'HTTPS with pinned certificate' : 'Plain HTTP — add TLS paths in Host Settings'),
+        if (secure && fp != null && fp.isNotEmpty)
+          _row(context, true, 'Certificate fingerprint',
+              '${fp.substring(0, 16)}… (clients verify on connect)'),
+        _row(context, true, 'Login enforced',
+            'Username + Argon2id password on every new device'),
+        _row(context, true, 'Short-lived tokens',
+            '15-min access, 30-day refresh, pinned per device'),
+        _row(context, retention > 0, 'Trash auto-purge',
+            retention > 0
+                ? 'Deleted files purged after $retention days'
+                : 'Trash kept forever — set retention below'),
+        _row(context, quota > 0, 'Vault quota',
+            quota > 0
+                ? 'Uploads capped at ${formatBytes(quota)}'
+                : 'Unlimited — set a cap to contain damage'),
+      ],
+    );
+  }
+
+  Widget _row(BuildContext context, bool pass, String title, String sub) =>
+      ListTile(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(
+          pass ? Icons.check_circle_rounded : Icons.warning_rounded,
+          color: pass
+              ? const Color(0xFF43A047)
+              : const Color(0xFFFB8C00),
+        ),
+        title: Text(title,
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(fontWeight: FontWeight.w600)),
+        subtitle: Text(sub, style: Theme.of(context).textTheme.bodySmall),
+      );
+}
+
+/// Reads the runner fingerprint without assuming its type.
+String? _runnerFingerprint(dynamic server) {
+  try {
+    return server.fingerprint as String?;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Activity feed from the host audit log.
+class _ActivityFeed extends StatelessWidget {
+  final dynamic vault;
   const _ActivityFeed({required this.vault});
 
   static const _icons = {

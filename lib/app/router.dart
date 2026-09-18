@@ -66,12 +66,6 @@ final routerProvider = Provider<GoRouter>((ref) {
           ]),
           StatefulShellBranch(routes: [
             GoRoute(
-              path: '/client/devices',
-              builder: (context, state) => const DevicesScreen(),
-            ),
-          ]),
-          StatefulShellBranch(routes: [
-            GoRoute(
               path: '/client/storage',
               builder: (context, state) => const StorageScreen(),
             ),
@@ -83,6 +77,11 @@ final routerProvider = Provider<GoRouter>((ref) {
             ),
           ]),
         ],
+      ),
+      GoRoute(
+        path: '/client/devices',
+        parentNavigatorKey: rootNavigatorKey,
+        builder: (context, state) => const DevicesScreen(),
       ),
       GoRoute(
         path: '/client/preview/:fileId',
@@ -100,7 +99,7 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-/// Bottom-navigation shell for Client Mode screens.
+/// Bottom-navigation shell for Client Mode screens (5 max — thumb zone).
 class ClientShell extends StatelessWidget {
   const ClientShell({required this.navigationShell, super.key});
   final StatefulNavigationShell navigationShell;
@@ -111,15 +110,23 @@ class ClientShell extends StatelessWidget {
       body: navigationShell,
       bottomNavigationBar: NavigationBar(
         selectedIndex: navigationShell.currentIndex,
-        onDestinationSelected: navigationShell.goBranch,
+        // Tapping the active tab resets its stack (expected behavior).
+        onDestinationSelected: (i) => navigationShell.goBranch(
+          i,
+          initialLocation: i == navigationShell.currentIndex,
+        ),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.folder), label: 'Files'),
           NavigationDestination(
-              icon: Icon(Icons.swap_vert_circle_outlined), label: 'Transfers'),
-          NavigationDestination(icon: Icon(Icons.delete_outline), label: 'Trash'),
-          NavigationDestination(icon: Icon(Icons.devices), label: 'Devices'),
-          NavigationDestination(icon: Icon(Icons.sd_storage), label: 'Storage'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
+              icon: Icon(Icons.folder_rounded), label: 'Files'),
+          NavigationDestination(
+              icon: Icon(Icons.swap_vert_circle_rounded),
+              label: 'Transfers'),
+          NavigationDestination(
+              icon: Icon(Icons.delete_outline_rounded), label: 'Trash'),
+          NavigationDestination(
+              icon: Icon(Icons.sd_storage_rounded), label: 'Storage'),
+          NavigationDestination(
+              icon: Icon(Icons.settings_rounded), label: 'Settings'),
         ],
       ),
     );

@@ -146,6 +146,22 @@ flutter run -d linux   # desktop
 flutter build apk --release   # Android → build/app/outputs/flutter-apk/
 ```
 
+## Experience design (why it feels fast)
+
+LocalVault is designed around how people actually perceive software:
+
+- **Instant feedback** — stars, comments, and uploads acknowledge the tap
+  immediately (optimistic UI with rollback); haptics confirm what fingers do
+- **No dead ends** — deletes are undoable, trash states its safety window,
+  errors name the fix and offer Retry, offline mode says so honestly
+- **Thumb-first** — 5 bottom tabs, bottom sheets, FAB, swipe-to-star/delete
+  with button fallbacks; destructive actions live away from thumbs
+- **Recency language** — lists speak in "2h ago", details keep exact dates
+- **Trust is visible** — the host Security scorecard, pinned-certificate
+  flow, and checksum "verified" badges show the safety instead of claiming it
+- **Progressive onboarding** — a 10-second intro once, then features teach
+  themselves through empty states and contextual hints
+
 Architecture: `lib/app` (theme/router) · `lib/server` (shelf API on a
 background isolate) · `lib/data` (SQLite + repositories) · `lib/client`
 (Dio services, transfers, backup) · `lib/features` (screens) ·

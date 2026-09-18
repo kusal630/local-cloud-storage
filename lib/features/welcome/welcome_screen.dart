@@ -4,10 +4,43 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../widgets/common.dart';
+import '../onboarding/onboarding_screen.dart';
 import 'package:localvault/core/constants/app_constants.dart';
 
-class WelcomeScreen extends ConsumerWidget {
+class WelcomeScreen extends ConsumerStatefulWidget {
   const WelcomeScreen({super.key});
+  @override
+  ConsumerState<WelcomeScreen> createState() => _WelcomeScreenState();
+}
+
+class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
+  bool? _seenOnboarding;
+
+  @override
+  void initState() {
+    super.initState();
+    OnboardingFlow.seen().then((seen) {
+      if (!mounted) return;
+      setState(() => _seenOnboarding = seen);
+    }).catchError((_) {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_seenOnboarding == null) {
+      return const Scaffold(
+          body: Center(child: CircularProgressIndicator()));
+    }
+    if (!_seenOnboarding!) {
+      return OnboardingFlow(
+          onDone: () => setState(() => _seenOnboarding = true));
+    }
+    return const _WelcomeBody();
+  }
+}
+
+class _WelcomeBody extends ConsumerWidget {
+  const _WelcomeBody();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

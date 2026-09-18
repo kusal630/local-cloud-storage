@@ -138,11 +138,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   DateTime? _syncedAt;
   List<VaultFile>? _serverResults;
   bool _searching = false;
+  int _syncFails = 0;
+  bool get _offline => _syncFails >= 2;
+  List<String> _searchHistory = [];
 
   @override
   void initState() {
     super.initState();
     _restorePrefs();
+    _loadHistory();
     _load();
     // Auto-refresh when transfers finish while browsing.
     ref.read(transferManagerProvider).addListener(_onTransfersChanged);
@@ -172,6 +176,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     try {
       final version = await ref.read(fileServiceProvider).syncVersion();
       if (!mounted) return;
+      setState(() => _syncFails = 0);
       if (_syncVersion == null) {
         setState(() {
           _syncVersion = version;
@@ -184,8 +189,35 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         setState(() => _syncedAt = DateTime.now());
       }
     } catch (_) {
-      // Host unreachable — stay on cached data.
+      // Host unreachable — stay on cached data, say so honestly.
+      if (!mounted) return;
+      setState(() => _syncFails = _syncFails + 1);
     }
+  }
+
+  Future<void> _loadHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _searchHistory = prefs.getStringList('search_history') ?? [];
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _rememberQuery(String q) async {
+    final query = q.trim();
+    if (query.length < 2) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final history = prefs.getStringList('search_history') ?? [];
+      history.remove(query);
+      history.insert(0, query);
+      await prefs.setStringList(
+          'search_history', history.take(6).toList());
+      if (!mounted) return;
+      setState(() => _searchHistory = history.take(6).toList());
+    } catch (_) {}
   }
 
   @override
@@ -322,6 +354,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           _serverResults = results;
           _searching = false;
         });
+        async.unawaited(_rememberQuery(q));
       } catch (_) {
         if (!mounted) return;
         setState(() => _searching = false);
@@ -405,12 +438,34 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       ),
     );
     if (confirmed != true) return;
+    HapticFeedback.mediumImpact();
     try {
       final svc = ref.read(fileServiceProvider);
       for (final id in ids) {
         await svc.deleteFile(id);
       }
       _load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${ids.length} item(s) moved to Trash.'),
+          action: SnackBarAction(
+            label: 'UNDO',
+            onPressed: () async {
+              try {
+                for (final id in ids) {
+                  await svc.restoreFile(id);
+                }
+                _load();
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Undo failed: $e')));
+              }
+            },
+          ),
+        ),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -896,6 +951,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
             parentId: ref.read(currentFolderProvider),
             name: p.basename(path),
           );
+      HapticFeedback.lightImpact();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Note queued — see Transfers')),
       );
@@ -905,11 +961,37 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           .showSnackBar(SnackBar(content: Text('Note failed: $e')));
     }
   }
-
-  Future<void> _toggleFavorite(VaultFile file) async {    try {
-      await ref.read(fileServiceProvider).setFavorite(file.id, !file.isFavorite);
-      _load();
+  /// Optimistic star: the icon flips instantly (peak-end rule); the rare
+  /// failure rolls back with a quiet message.
+  Future<void> _toggleFavorite(VaultFile file) async {
+    HapticFeedback.lightImpact();
+    final want = !file.isFavorite;
+    setState(() {
+      final idx = _items.indexWhere((f) => f.id == file.id);
+      if (idx >= 0) {
+        _items[idx] = VaultFile(
+          id: file.id,
+          parentId: file.parentId,
+          name: file.name,
+          type: file.type,
+          mime: file.mime,
+          size: file.size,
+          checksum: file.checksum,
+          createdAt: file.createdAt,
+          modifiedAt: file.modifiedAt,
+          deletedAt: file.deletedAt,
+          hasThumb: file.hasThumb,
+          isFavorite: want,
+          lastOpenedAt: file.lastOpenedAt,
+          tags: file.tags,
+        );
+      }
+    });
+    try {
+      await ref.read(fileServiceProvider).setFavorite(file.id, want);
     } catch (e) {
+      // Roll back to server truth.
+      _load();
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Star failed: $e')));
@@ -941,7 +1023,8 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete?'),
-        content: Text('Move "${file.name}" to trash?'),
+        content: Text(
+            'Move "${file.name}" to trash? You can undo this right after.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -955,9 +1038,32 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       ),
     );
     if (confirmed != true) return;
+    HapticFeedback.mediumImpact();
     try {
       await ref.read(fileServiceProvider).deleteFile(file.id);
       _load();
+      if (!mounted) return;
+      // Reversibility builds trust: instant undo, calm wording.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('"${file.name}" moved to Trash.'),
+          action: SnackBarAction(
+            label: 'UNDO',
+            onPressed: () async {
+              try {
+                await ref
+                    .read(fileServiceProvider)
+                    .restoreFile(file.id);
+                _load();
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Undo failed: $e')));
+              }
+            },
+          ),
+        ),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -1067,6 +1173,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       }
     }
     if (mounted) {
+      HapticFeedback.lightImpact();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Uploads queued — see Transfers')),
       );
@@ -1138,6 +1245,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         leading: _selectionMode
             ? IconButton(
                 icon: const Icon(Icons.close),
+                tooltip: 'Clear selection',
                 onPressed: () => setState(() {
                   _selected.clear();
                   _selectionMode = false;
@@ -1146,6 +1254,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
             : (_crumbs.length > 1
                 ? IconButton(
                     icon: const Icon(Icons.arrow_back),
+                    tooltip: 'Back to ${_crumbs[_crumbs.length - 2].name}',
                     onPressed: () => _navigateToCrumb(_crumbs.length - 2),
                   )
                 : null),
@@ -1217,7 +1326,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                 _buildCrumbs(),
                 _buildSearchBar(),
                 _buildFilterChips(),
-                Expanded(child: _buildBody(visible, offlineIds)),
+                if (_offline) _buildOfflineBanner(),
+                if (_query.trim().isEmpty && _searchHistory.isNotEmpty)
+                  _buildHistoryChips(),
+                Expanded(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    child: _buildBody(visible, offlineIds),
+                  ),
+                ),
               ],
             ),
             if (_dragging)
@@ -1292,6 +1409,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                   else
                     IconButton(
                       icon: const Icon(Icons.clear_rounded),
+                      tooltip: 'Clear search',
                       onPressed: () {
                         _searchController.clear();
                         _onQueryChanged('');
@@ -1299,6 +1417,68 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                     )
                 ],
           onChanged: _onQueryChanged,
+        ),
+      );
+
+  Widget _buildOfflineBanner() => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        child: Card(
+          color: Theme.of(context)
+              .colorScheme
+              .errorContainer
+              .withValues(alpha: 0.7),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                Icon(Icons.cloud_off_rounded,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.onErrorContainer),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Host unreachable — showing last synced files.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onErrorContainer,
+                        ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() => _syncFails = 0);
+                    _pollSync();
+                    _load();
+                  },
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+  Widget _buildHistoryChips() => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        child: Row(
+          children: [
+            Icon(Icons.history_rounded,
+                size: 16, color: Theme.of(context).colorScheme.outline),
+            const SizedBox(width: 6),
+            for (final h in _searchHistory)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ActionChip(
+                  label: Text(h),
+                  onPressed: () {
+                    _searchController.text = h;
+                    _onQueryChanged(h);
+                  },
+                ),
+              ),
+          ],
         ),
       );
 
@@ -1470,15 +1650,52 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   String _subtitle(VaultFile f, bool pinned) {
     final parts = <String>[];
     if (f.isFolder) {
-      parts.add(formatDateTime(f.modifiedAt));
+      parts.add(formatRelative(f.modifiedAt));
     } else {
-      parts.add('${formatBytes(f.size)} • ${formatDateTime(f.modifiedAt)}');
+      parts.add('${formatBytes(f.size)} • ${formatRelative(f.modifiedAt)}');
     }
     if (f.tags.isNotEmpty) {
       parts.add(f.tags.map((t) => '#$t').join(' '));
     }
     if (pinned) parts.add('offline');
     return parts.join(' • ');
+  }
+
+  /// Swipe delete without a blocking dialog — the undo snackbar is the
+  /// safety net (gestures stay fast, recovery stays visible).
+  Future<void> _deleteSwipe(VaultFile file) async {
+    HapticFeedback.mediumImpact();
+    try {
+      await ref.read(fileServiceProvider).deleteFile(file.id);
+      _load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('"${file.name}" moved to Trash.'),
+          action: SnackBarAction(
+            label: 'UNDO',
+            onPressed: () async {
+              try {
+                await ref
+                    .read(fileServiceProvider)
+                    .restoreFile(file.id);
+                _load();
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Undo failed: $e')));
+              }
+            },
+          ),
+        ),
+      );
+    } catch (e) {
+      _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
   }
 
   Widget _buildList(List<VaultFile> visible, Set<String> offlineIds) =>
@@ -1489,7 +1706,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           final file = visible[i];
           final selected = _selected.contains(file.id);
           final pinned = offlineIds.contains(file.id);
-          return Card(
+          final row = Card(
             margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
             child: ListTile(
               leading: VaultFileIcon(name: file.name, isFolder: file.isFolder),
@@ -1537,9 +1754,65 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                     )
                   : IconButton(
                       icon: const Icon(Icons.more_vert_rounded),
+                      tooltip: 'Actions for ${file.name}',
                       onPressed: () => _showItemMenu(file),
                     ),
             ),
+          );
+          if (_selectionMode) return row;
+          // Swipe gestures with visible actions (buttons remain as fallback).
+          return Dismissible(
+            key: ValueKey('file-${file.id}'),
+            direction: file.isFolder
+                ? DismissDirection.endToStart
+                : DismissDirection.horizontal,
+            background: Container(
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.only(left: 20),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFB8C00).withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.star_rounded, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text('Star',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+            secondaryBackground: Container(
+              alignment: Alignment.centerRight,
+              padding: const EdgeInsets.only(right: 20),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Delete',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold)),
+                  SizedBox(width: 8),
+                  Icon(Icons.delete_rounded, color: Colors.white),
+                ],
+              ),
+            ),
+            confirmDismiss: (direction) async {
+              if (direction == DismissDirection.startToEnd) {
+                if (!file.isFolder) _toggleFavorite(file);
+                return false;
+              }
+              await _deleteSwipe(file);
+              return false;
+            },
+            child: row,
           );
         },
       );

@@ -332,6 +332,21 @@ String formatDateTime(DateTime dt) {
   return '${local.day} ${months[local.month - 1]} ${local.year}, $time';
 }
 
+/// Relative time ("just now", "5m ago", "Yesterday") — recency beats
+/// timestamps for scanning lists (peak attention on what's new).
+String formatRelative(DateTime dt) {
+  final diff = DateTime.now().difference(dt.toLocal());
+  if (diff.isNegative) return 'just now';
+  if (diff.inSeconds < 45) return 'just now';
+  if (diff.inMinutes < 1) return '${diff.inSeconds}s ago';
+  if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+  if (diff.inHours < 24) return '${diff.inHours}h ago';
+  if (diff.inDays < 1) return '${diff.inHours}h ago';
+  if (diff.inDays == 1) return 'Yesterday';
+  if (diff.inDays < 7) return '${diff.inDays}d ago';
+  return formatDateTime(dt);
+}
+
 String formatDuration(Duration d) {
   if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
   if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds % 60}s';

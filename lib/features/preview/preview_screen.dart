@@ -291,8 +291,7 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
     } catch (_) {}
   }
 
-  Future<void> _restoreVersion(FileVersion v) async {
-    final confirmed = await showDialog<bool>(
+  Future<void> _restoreVersion(FileVersion v) async {    final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('Restore v${v.version}?'),
@@ -314,6 +313,7 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
           .read(fileServiceProvider)
           .restoreVersion(widget.file.id, v.version);
       if (!mounted) return;
+      HapticFeedback.lightImpact();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Restored v${v.version}')),
       );
@@ -465,14 +465,28 @@ class _CommentsCardState extends ConsumerState<_CommentsCard> {
   Future<void> _send() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _sending) return;
-    setState(() => _sending = true);
+    // Optimistic: show the comment instantly, reconcile on failure.
+    final optimistic = FileComment(
+      id: 'pending-${DateTime.now().millisecondsSinceEpoch}',
+      fileId: widget.file.id,
+      author: 'you',
+      body: text,
+      createdAt: DateTime.now(),
+    );
+    setState(() {
+      _sending = true;
+      _comments = [...?_comments, optimistic];
+    });
+    _controller.clear();
+    HapticFeedback.lightImpact();
     try {
       await ref
           .read(fileServiceProvider)
           .addComment(widget.file.id, text);
-      _controller.clear();
       await _load();
     } catch (e) {
+      // Roll back the optimistic row.
+      await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Comment failed: $e')));
@@ -518,7 +532,7 @@ class _CommentsCardState extends ConsumerState<_CommentsCard> {
                   leading: const Icon(Icons.comment_rounded, size: 20),
                   title: Text(c.body),
                   subtitle: Text(
-                      '${c.author} • ${formatDateTime(c.createdAt)}'),
+                      '${c.author} • ${formatRelative(c.createdAt)}'),
                   trailing: IconButton(
                     icon: const Icon(Icons.delete_outline_rounded, size: 18),
                     onPressed: () => _delete(c),
@@ -605,7 +619,7 @@ class _FileActivityCardState
                 title: Text(e.action,
                     style: Theme.of(context).textTheme.bodyMedium),
                 subtitle: Text(
-                    '${e.targetName ?? ''} • ${formatDateTime(e.createdAt)}'
+                    '${e.targetName ?? ''} • ${formatRelative(e.createdAt)}'
                         .trim(),
                     style: Theme.of(context).textTheme.bodySmall),
               ),

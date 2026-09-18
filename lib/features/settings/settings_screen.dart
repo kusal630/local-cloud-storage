@@ -119,6 +119,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 subtitle: 'Manage expiring file links',
                 onTap: () => context.push('/client/sharing'),
               ),
+              _SettingsTile(
+                icon: Icons.devices_rounded,
+                title: 'Devices',
+                subtitle: 'Paired phones, PCs and API tokens',
+                onTap: () => context.push('/client/devices'),
+              ),
             ],
           ),
           _SettingsSection(

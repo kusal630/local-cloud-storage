@@ -14,11 +14,23 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
   List<VaultFile> _items = [];
   bool _loading = false;
   String? _error;
+  int? _retentionDays;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _loadRetention();
+  }
+
+  /// Shows the safety window ("recoverable for N days") — reversibility
+  /// messaging keeps deletes feeling safe.
+  Future<void> _loadRetention() async {
+    try {
+      final settings = await ref.read(fileServiceProvider).getSettings();
+      if (!mounted) return;
+      setState(() => _retentionDays = settings.trashRetentionDays);
+    } catch (_) {}
   }
 
   Future<void> _load() async {
@@ -137,18 +149,44 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
                   : RefreshIndicator(
                       onRefresh: _load,
                       child: ListView.builder(
-                        itemCount: _items.length,
+                        padding: const EdgeInsets.only(top: 4),
+                        itemCount: _items.length + 1,
                         itemBuilder: (context, i) {
-                          final file = _items[i];
+                          if (i == 0) {
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                  16, 8, 16, 4),
+                              child: Text(
+                                _retentionDays == null
+                                    ? 'Deleted items stay here until you remove them.'
+                                    : _retentionDays == 0
+                                        ? 'Deleted items stay here until you remove them.'
+                                        : 'Deleted items recover here for $_retentionDays days, then vanish forever.',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outline,
+                                    ),
+                              ),
+                            );
+                          }
+                          final file = _items[i - 1];
                           return ListTile(
-                            leading: Icon(
-                              file.isFolder ? Icons.folder : Icons.insert_drive_file,
-                            ),
+                            leading: VaultFileIcon(
+                                name: file.name,
+                                isFolder: file.isFolder,
+                                size: 36),
                             title: Text(file.name),
                             subtitle: Text(
-                              'Deleted ${file.deletedAt?.toLocal().toString().substring(0, 16) ?? 'unknown'}',
+                              file.deletedAt == null
+                                  ? 'In trash'
+                                  : 'Deleted ${formatRelative(file.deletedAt!)}',
                             ),
                             trailing: PopupMenuButton(
+                              tooltip: 'Actions for ${file.name}',
                               itemBuilder: (_) => [
                                 const PopupMenuItem(
                                   value: 'restore',
