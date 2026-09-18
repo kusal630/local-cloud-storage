@@ -1,6 +1,30 @@
-# LocalVault
+# LocalVault — Your Private Local Cloud
+
+> LAN-only • Offline-first • No accounts • No subscriptions • Your drive, your rules.
 
 A cross-platform local cloud storage application that turns local storage (external SSD, pen drive, SD card, or folder) into a private local cloud. No internet access required — all data stays on your devices.
+
+## ✨ What's new (Best-in-World wave)
+
+- **Premium Material 3 design system** — deep-teal identity, expressive cards/dialogs/snackbars/chips, polished dark mode, responsive layouts (phone → tablet → desktop).
+- **Brand-new Welcome** — hero logo, value props (fast LAN, QR pairing, you-hold-the-keys), trust footer.
+- **Files 2.0** — breadcrumbs with back navigation, per-type file icons, `size • date` subtitles, inline search + type filter chips (All/Folders/Images/Docs/Video), sort indicator + persistence, responsive grid (2→6 columns), selection mode + bulk trash, skeleton loading, drag & drop with overlay.
+- **Reliable setup & pairing** — host setup keeps typed input (no cursor jumps), password visibility + strength meter, 2-step layout; client connect validates URL/code, remembers last server, robust QR parsing (`localvault://host:port`), clear LAN help + error cards.
+- **Honest dashboards** — host dashboard split into Connect/Devices/Storage cards with status pills, fixed QR payload, formatted dates, visual storage meters; transfers show Up/Download labels + % + rounded bars; storage reuses one meter widget; preview downloads via folder picker (no `/tmp` hack), formatted metadata + copyable checksum.
+
+## Feature matrix
+
+| Area | Status |
+|---|---|
+| Host node (desktop, :8484, QR + 6-digit code) | ✅ |
+| Client browse/upload/download/rename/move/trash | ✅ |
+| Chunked upload + Range resume + checksum | ✅ |
+| Search + sort + grid/list + filters | ✅ |
+| Bulk select + trash | ✅ |
+| Dark mode + responsive | ✅ |
+| TLS/HTTPS on LAN | 🔲 roadmap |
+| mDNS auto-discovery | 🔲 roadmap |
+| Favorites/Recent, versioning, persistent queue | 🔲 roadmap |
 
 ## Architecture
 

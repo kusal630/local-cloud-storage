@@ -6,11 +6,18 @@ import 'package:go_router/go_router.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/data/models/vault_file.dart';
 import 'package:localvault/widgets/common.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class FilesScreen extends ConsumerStatefulWidget {
   const FilesScreen({super.key});
   @override
   ConsumerState<FilesScreen> createState() => _FilesScreenState();
+}
+
+class _Crumb {
+  final String id;
+  final String name;
+  const _Crumb(this.id, this.name);
 }
 
 class _FilesScreenState extends ConsumerState<FilesScreen> {
@@ -21,17 +28,45 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   String _sortField = 'name';
   bool _sortAsc = true;
   bool _dragging = false;
+  String _query = '';
+  String _typeFilter = 'all';
+  final Set<String> _selected = {};
+  bool _selectionMode = false;
+  final List<_Crumb> _crumbs = [const _Crumb('root', 'Home')];
+  final _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    _restorePrefs();
     _load();
   }
 
+  Future<void> _restorePrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _isGridView = prefs.getBool('files_grid') ?? false;
+        _sortField = prefs.getString('files_sort') ?? 'name';
+        _sortAsc = prefs.getBool('files_sort_asc') ?? true;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _persistPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('files_grid', _isGridView);
+      await prefs.setString('files_sort', _sortField);
+      await prefs.setBool('files_sort_asc', _sortAsc);
+    } catch (_) {}
+  }
+
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _load();
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -43,16 +78,41 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       final folder = ref.read(currentFolderProvider);
       final svc = ref.read(fileServiceProvider);
       final items = await svc.listFiles(folder);
+      if (!mounted) return;
       setState(() {
         _items = _sortItems(items);
         _loading = false;
+        _selected.clear();
+        _selectionMode = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;
       });
     }
+  }
+
+  void _navigateToFolder(VaultFile folder) {
+    ref.read(currentFolderProvider.notifier).state = folder.id;
+    setState(() {
+      _crumbs.add(_Crumb(folder.id, folder.name));
+      _query = '';
+      _searchController.clear();
+    });
+    _load();
+  }
+
+  void _navigateToCrumb(int index) {
+    final crumb = _crumbs[index];
+    ref.read(currentFolderProvider.notifier).state = crumb.id;
+    setState(() {
+      _crumbs.removeRange(index + 1, _crumbs.length);
+      _query = '';
+      _searchController.clear();
+    });
+    _load();
   }
 
   List<VaultFile> _sortItems(List<VaultFile> items) {
@@ -76,6 +136,30 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     return sorted;
   }
 
+  List<VaultFile> get _visible {
+    final q = _query.trim().toLowerCase();
+    return _items.where((f) {
+      if (q.isNotEmpty && !f.name.toLowerCase().contains(q)) return false;
+      switch (_typeFilter) {
+        case 'folders':
+          return f.isFolder;
+        case 'images':
+          return (f.mime ?? '').startsWith('image/');
+        case 'docs':
+          final n = f.name.toLowerCase();
+          return n.endsWith('.pdf') ||
+              n.endsWith('.doc') ||
+              n.endsWith('.docx') ||
+              n.endsWith('.txt') ||
+              n.endsWith('.md');
+        case 'video':
+          return (f.mime ?? '').startsWith('video/');
+        default:
+          return true;
+      }
+    }).toList();
+  }
+
   void _sortBy(String field) {
     setState(() {
       if (_sortField == field) {
@@ -86,6 +170,51 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       }
       _items = _sortItems(_items);
     });
+    _persistPrefs();
+  }
+
+  void _toggleSelect(String id) {
+    setState(() {
+      if (_selected.contains(id)) {
+        _selected.remove(id);
+        if (_selected.isEmpty) _selectionMode = false;
+      } else {
+        _selected.add(id);
+        _selectionMode = true;
+      }
+    });
+  }
+
+  Future<void> _bulkDelete() async {
+    final ids = _selected.toList();
+    if (ids.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Move ${ids.length} item(s) to trash?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final svc = ref.read(fileServiceProvider);
+      for (final id in ids) {
+        await svc.deleteFile(id);
+      }
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Bulk delete failed: $e')));
+      }
+    }
   }
 
   void _showItemMenu(VaultFile file) {
@@ -97,16 +226,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           children: [
             if (file.isFolder)
               ListTile(
-                leading: const Icon(Icons.folder_open),
+                leading: const Icon(Icons.folder_open_rounded),
                 title: const Text('Open'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  ref.read(currentFolderProvider.notifier).state = file.id;
-                  _load();
+                  _navigateToFolder(file);
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.edit),
+              leading: const Icon(Icons.edit_rounded),
               title: const Text('Rename'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -115,7 +243,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
             ),
             if (!file.isFolder)
               ListTile(
-                leading: const Icon(Icons.download),
+                leading: const Icon(Icons.download_rounded),
                 title: const Text('Download'),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -123,7 +251,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.drive_file_move),
+              leading: const Icon(Icons.drive_file_move_rounded),
               title: const Text('Move'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -131,7 +259,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
+              leading: const Icon(Icons.delete_rounded, color: Colors.red),
               title:
                   const Text('Delete', style: TextStyle(color: Colors.red)),
               onTap: () {
@@ -257,7 +385,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Uploads queued')),
+        const SnackBar(content: Text('Uploads queued — see Transfers')),
       );
     }
   }
@@ -301,31 +429,68 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final visible = _visible;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Files'),
+        title: _selectionMode
+            ? Text('${_selected.length} selected')
+            : const Text('Files'),
+        leading: _selectionMode
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => setState(() {
+                  _selected.clear();
+                  _selectionMode = false;
+                }),
+              )
+            : (_crumbs.length > 1
+                ? IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () => _navigateToCrumb(_crumbs.length - 2),
+                  )
+                : null),
         actions: [
-          IconButton(
-            icon: Icon(_isGridView ? Icons.list : Icons.grid_view),
-            onPressed: () => setState(() => _isGridView = !_isGridView),
-          ),
-          PopupMenuButton<String>(
-            onSelected: _sortBy,
-            itemBuilder: (_) => [
-              const PopupMenuItem(value: 'name', child: Text('Sort by Name')),
-              const PopupMenuItem(value: 'size', child: Text('Sort by Size')),
-              const PopupMenuItem(value: 'date', child: Text('Sort by Date')),
-            ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: _showSearch,
-          ),
+          if (_selectionMode)
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: 'Move to trash',
+              onPressed: _bulkDelete,
+            )
+          else ...[
+            IconButton(
+              icon: Icon(_isGridView ? Icons.list_rounded : Icons.grid_view_rounded),
+              tooltip: 'Toggle view',
+              onPressed: () {
+                setState(() => _isGridView = !_isGridView);
+                _persistPrefs();
+              },
+            ),
+            PopupMenuButton<String>(
+              onSelected: _sortBy,
+              icon: const Icon(Icons.sort_rounded),
+              tooltip: 'Sort ($_sortField)',
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                    value: 'name',
+                    child: Text(
+                        'Sort by Name ${_sortField == 'name' ? (_sortAsc ? '↑' : '↓') : ''}')),
+                PopupMenuItem(
+                    value: 'size',
+                    child: Text(
+                        'Sort by Size ${_sortField == 'size' ? (_sortAsc ? '↑' : '↓') : ''}')),
+                PopupMenuItem(
+                    value: 'date',
+                    child: Text(
+                        'Sort by Date ${_sortField == 'date' ? (_sortAsc ? '↑' : '↓') : ''}')),
+              ],
+            ),
+          ],
         ],
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.extended(
         onPressed: _showFabActions,
-        child: const Icon(Icons.add),
+        icon: const Icon(Icons.add),
+        label: const Text('New'),
       ),
       body: DropTarget(
         onDragEntered: (_) => setState(() => _dragging = true),
@@ -339,35 +504,33 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                   name: f.name,
                 );
           }
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Uploads queued — see Transfers')),
+            );
+          }
         },
         child: Stack(
           children: [
-            if (_loading)
-              const LoadingIndicator()
-            else if (_error != null)
-              ErrorState(message: _error!, onRetry: _load)
-            else if (_items.isEmpty)
-              const EmptyState(
-                icon: Icons.folder_open,
-                title: 'No files yet',
-                subtitle: 'Tap + to upload files or create folders',
-              )
-            else
-              RefreshIndicator(
-                onRefresh: _load,
-                child: _isGridView ? _buildGrid(context) : _buildList(context),
-              ),
+            Column(
+              children: [
+                _buildCrumbs(),
+                _buildSearchBar(),
+                _buildFilterChips(),
+                Expanded(child: _buildBody(visible)),
+              ],
+            ),
             if (_dragging)
               Container(
                 color: Theme.of(context)
                     .colorScheme
                     .primaryContainer
-                    .withValues(alpha: 0.8),
+                    .withValues(alpha: 0.85),
                 alignment: Alignment.center,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.cloud_upload,
+                    Icon(Icons.cloud_upload_rounded,
                         size: 64,
                         color: Theme.of(context).colorScheme.primary),
                     const SizedBox(height: 16),
@@ -382,6 +545,243 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     );
   }
 
+  Widget _buildCrumbs() => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            for (var i = 0; i < _crumbs.length; i++) ...[
+              if (i > 0)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 2),
+                  child: Icon(Icons.chevron_right_rounded, size: 16),
+                ),
+              ActionChip(
+                label: Text(_crumbs[i].name),
+                onPressed:
+                    i == _crumbs.length - 1 ? null : () => _navigateToCrumb(i),
+              ),
+            ],
+          ],
+        ),
+      );
+
+  Widget _buildSearchBar() => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: SearchBar(
+          controller: _searchController,
+          hintText: 'Search in this folder…',
+          leading: const Icon(Icons.search_rounded),
+          trailing: _query.isEmpty
+              ? null
+              : [
+                  IconButton(
+                    icon: const Icon(Icons.clear_rounded),
+                    onPressed: () {
+                      _searchController.clear();
+                      setState(() => _query = '');
+                    },
+                  )
+                ],
+          onChanged: (v) => setState(() => _query = v),
+        ),
+      );
+
+  Widget _buildFilterChips() {
+    const filters = [
+      ('all', 'All'),
+      ('folders', 'Folders'),
+      ('images', 'Images'),
+      ('docs', 'Docs'),
+      ('video', 'Video'),
+    ];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          for (final f in filters)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: FilterChip(
+                label: Text(f.$2),
+                selected: _typeFilter == f.$1,
+                onSelected: (_) => setState(() => _typeFilter = f.$1),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(List<VaultFile> visible) {
+    if (_loading) return const SkeletonList();
+    if (_error != null) return ErrorState(message: _error!, onRetry: _load);
+    if (_items.isEmpty) {
+      return const EmptyState(
+        icon: Icons.folder_open_rounded,
+        title: 'No files yet',
+        subtitle: 'Tap New to upload files or create folders.\nTip: drag & drop works on desktop.',
+      );
+    }
+    if (visible.isEmpty) {
+      return EmptyState(
+        icon: Icons.search_off_rounded,
+        title: 'No matches',
+        subtitle: 'Try a different search or filter.',
+        action: OutlinedButton(
+          onPressed: () {
+            _searchController.clear();
+            setState(() {
+              _query = '';
+              _typeFilter = 'all';
+            });
+          },
+          child: const Text('Clear filters'),
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: _isGridView ? _buildGrid(visible) : _buildList(visible),
+    );
+  }
+
+  String _subtitle(VaultFile f) {
+    if (f.isFolder) return formatDateTime(f.modifiedAt);
+    return '${formatBytes(f.size)} • ${formatDateTime(f.modifiedAt)}';
+  }
+
+  Widget _buildList(List<VaultFile> visible) => ListView.builder(
+        itemCount: visible.length,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        itemBuilder: (context, i) {
+          final file = visible[i];
+          final selected = _selected.contains(file.id);
+          return Card(
+            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+            child: ListTile(
+              leading: VaultFileIcon(name: file.name, isFolder: file.isFolder),
+              title: Text(file.name,
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(_subtitle(file)),
+              selected: selected,
+              selectedTileColor: Theme.of(context)
+                  .colorScheme
+                  .primaryContainer
+                  .withValues(alpha: 0.4),
+              onTap: () {
+                if (_selectionMode) {
+                  _toggleSelect(file.id);
+                } else if (file.isFolder) {
+                  _navigateToFolder(file);
+                } else {
+                  context.push('/client/preview/${file.id}');
+                }
+              },
+              onLongPress: () {
+                if (_selectionMode) {
+                  _toggleSelect(file.id);
+                } else {
+                  _showItemMenu(file);
+                }
+              },
+              trailing: _selectionMode
+                  ? Checkbox(
+                      value: selected,
+                      onChanged: (_) => _toggleSelect(file.id),
+                    )
+                  : IconButton(
+                      icon: const Icon(Icons.more_vert_rounded),
+                      onPressed: () => _showItemMenu(file),
+                    ),
+            ),
+          );
+        },
+      );
+
+  Widget _buildGrid(List<VaultFile> visible) =>
+      LayoutBuilder(builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final cols = w > 1100
+            ? 6
+            : w > 800
+                ? 5
+                : w > 600
+                    ? 4
+                    : w > 380
+                        ? 3
+                        : 2;
+        return GridView.builder(
+          padding: const EdgeInsets.all(12),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cols,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: 0.92,
+          ),
+          itemCount: visible.length,
+          itemBuilder: (context, i) {
+            final file = visible[i];
+            final selected = _selected.contains(file.id);
+            return Card(
+              color: selected
+                  ? Theme.of(context)
+                      .colorScheme
+                      .primaryContainer
+                      .withValues(alpha: 0.5)
+                  : null,
+              child: InkWell(
+                onTap: () {
+                  if (_selectionMode) {
+                    _toggleSelect(file.id);
+                  } else if (file.isFolder) {
+                    _navigateToFolder(file);
+                  } else {
+                    context.push('/client/preview/${file.id}');
+                  }
+                },
+                onLongPress: () => _selectionMode
+                    ? _toggleSelect(file.id)
+                    : _showItemMenu(file),
+                borderRadius: BorderRadius.circular(16),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      VaultFileIcon(
+                          name: file.name, isFolder: file.isFolder, size: 52),
+                      const SizedBox(height: 10),
+                      Text(
+                        file.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _subtitle(file),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      });
+
   void _showFabActions() {
     showModalBottomSheet(
       context: context,
@@ -390,15 +790,16 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.upload_file),
-              title: const Text('Upload File'),
+              leading: const Icon(Icons.upload_file_rounded),
+              title: const Text('Upload Files'),
+              subtitle: const Text('Pick one or more files'),
               onTap: () {
                 Navigator.pop(ctx);
                 _upload();
               },
             ),
             ListTile(
-              leading: const Icon(Icons.create_new_folder),
+              leading: const Icon(Icons.create_new_folder_rounded),
               title: const Text('New Folder'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -408,162 +809,6 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
           ],
         ),
       ),
-    );
-  }
-
-  void _showSearch() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Search Files'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Search...'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              final query = controller.text.trim();
-              if (query.isEmpty) return;
-              final messenger = ScaffoldMessenger.of(context);
-              try {
-                final results =
-                    await ref.read(fileServiceProvider).search(query);
-                if (context.mounted) {
-                  _showSearchResults(results);
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  messenger
-                      .showSnackBar(SnackBar(content: Text('Search failed: $e')));
-                }
-              }
-            },
-            child: const Text('Search'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showSearchResults(List<VaultFile> results) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Results (${results.length})'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: results.length,
-            itemBuilder: (_, i) {
-              final file = results[i];
-              return ListTile(
-                leading: Icon(
-                    file.isFolder ? Icons.folder : Icons.insert_drive_file),
-                title: Text(file.name),
-                subtitle: file.isFolder ? null : Text(formatBytes(file.size)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  if (file.isFolder) {
-                    ref.read(currentFolderProvider.notifier).state = file.id;
-                    _load();
-                  } else {
-                    context.push('/client/preview/${file.id}');
-                  }
-                },
-              );
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildList(BuildContext context) {
-    return ListView.builder(
-      itemCount: _items.length,
-      itemBuilder: (context, i) {
-        final file = _items[i];
-        return ListTile(
-          leading:
-              Icon(file.isFolder ? Icons.folder : Icons.insert_drive_file),
-          title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: file.isFolder ? null : Text(formatBytes(file.size)),
-          onTap: () {
-            if (file.isFolder) {
-              ref.read(currentFolderProvider.notifier).state = file.id;
-              _load();
-            } else {
-              context.push('/client/preview/${file.id}');
-            }
-          },
-          onLongPress: () => _showItemMenu(file),
-        );
-      },
-    );
-  }
-
-  Widget _buildGrid(BuildContext context) {
-    return GridView.builder(
-      padding: const EdgeInsets.all(8),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
-      ),
-      itemCount: _items.length,
-      itemBuilder: (context, i) {
-        final file = _items[i];
-        return Card(
-          child: InkWell(
-            onTap: () {
-              if (file.isFolder) {
-                ref.read(currentFolderProvider.notifier).state = file.id;
-                _load();
-              } else {
-                context.push('/client/preview/${file.id}');
-              }
-            },
-            onLongPress: () => _showItemMenu(file),
-            borderRadius: BorderRadius.circular(16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  file.isFolder ? Icons.folder : Icons.insert_drive_file,
-                  size: 48,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Text(
-                    file.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 }
@@ -592,10 +837,12 @@ class _FolderPickerDialogState extends ConsumerState<_FolderPickerDialog> {
   Future<void> _loadFolders(String parentId) async {
     try {
       final items = await ref.read(fileServiceProvider).listFiles(parentId);
+      if (!mounted) return;
       setState(() {
         _folders = items.where((f) => f.isFolder).toList();
       });
     } catch (_) {
+      if (!mounted) return;
       setState(() => _folders = []);
     }
   }
@@ -624,7 +871,7 @@ class _FolderPickerDialogState extends ConsumerState<_FolderPickerDialog> {
               ],
             ),
             const Divider(),
-            Expanded(
+            Flexible(
               child: _folders.isEmpty
                   ? const Text('No sub-folders')
                   : ListView.builder(
@@ -633,7 +880,7 @@ class _FolderPickerDialogState extends ConsumerState<_FolderPickerDialog> {
                       itemBuilder: (_, i) {
                         final f = _folders[i];
                         return ListTile(
-                          leading: const Icon(Icons.folder),
+                          leading: VaultFileIcon(name: f.name, isFolder: true, size: 36),
                           title: Text(f.name),
                           selected: _selectedFolder == f.id,
                           onTap: () {

@@ -44,31 +44,34 @@ class TransfersScreen extends ConsumerWidget {
                   margin:
                       const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: ListTile(
-                    leading: Icon(
-                      isUpload
-                          ? Icons.cloud_upload_outlined
-                          : Icons.cloud_download_outlined,
-                      color: _statusColor(task.status, colors),
-                    ),
+                    leading: VaultFileIcon(
+                        name: task.name,
+                        isFolder: false,
+                        size: 40),
                     title: Text(task.name, maxLines: 1, overflow: TextOverflow.ellipsis),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        LinearProgressIndicator(
-                          value: progress,
-                          color: _statusColor(task.status, colors),
-                          backgroundColor: colors.surfaceContainerHighest,
+                        const SizedBox(height: 6),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: progress,
+                            minHeight: 8,
+                            color: _statusColor(task.status, colors),
+                            backgroundColor: colors.surfaceContainerHighest,
+                          ),
                         ),
                         const SizedBox(height: 4),
                         Row(
                           children: [
                             Text(
-                              '${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)}',
+                              '${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)} • ${(progress * 100).round()}%',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const Spacer(),
                             Text(
-                              _statusLabel(task.status),
+                              _statusLabel(task.status, isUpload),
                               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                     color: _statusColor(task.status, colors),
                                     fontWeight: FontWeight.bold,
@@ -122,12 +125,13 @@ class TransfersScreen extends ConsumerWidget {
     }
   }
 
-  String _statusLabel(TransferStatus s) {
+  String _statusLabel(TransferStatus s, bool isUpload) {
+    final verb = isUpload ? 'Upload' : 'Download';
     switch (s) {
       case TransferStatus.queued:
         return 'Queued';
       case TransferStatus.running:
-        return 'Uploading...';
+        return '$verb…';
       case TransferStatus.completed:
         return 'Done';
       case TransferStatus.failed:

@@ -66,13 +66,9 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text('Disk Usage',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium),
-                                  const SizedBox(height: 16),
-                                  _UsageBar(
-                                    value: _status!.usedFraction,
+                                  const SectionHeader(title: 'DISK USAGE'),
+                                  StorageMeter(
+                                    fraction: _status!.usedFraction,
                                     usedLabel:
                                         'Used: ${formatBytes(_status!.used)}',
                                     freeLabel:
@@ -96,15 +92,13 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text('Vault Usage',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium),
-                                  const SizedBox(height: 16),
-                                  _UsageBar(
-                                    value: _status!.vaultFraction,
+                                  const SectionHeader(title: 'VAULT USAGE'),
+                                  StorageMeter(
+                                    fraction: _status!.vaultFraction,
                                     usedLabel:
                                         'Vault: ${formatBytes(_status!.vaultUsage)}',
+                                    freeLabel:
+                                        'Trash: ${formatBytes(_status!.trashUsage)}',
                                     color:
                                         Theme.of(context).colorScheme.primary,
                                   ),
@@ -133,45 +127,12 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(label, style: Theme.of(context).textTheme.bodyMedium),
-            Text(value, style: Theme.of(context).textTheme.bodyMedium),
+            Text(value,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w700)),
           ],
         ),
       );
-}
-
-class _UsageBar extends StatelessWidget {
-  final double value;
-  final String usedLabel;
-  final String? freeLabel;
-  final Color color;
-  const _UsageBar({
-    required this.value,
-    required this.usedLabel,
-    this.freeLabel,
-    required this.color,
-  });
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        LinearProgressIndicator(
-          value: value,
-          color: color,
-          backgroundColor:
-              Theme.of(context).colorScheme.surfaceContainerHighest,
-          minHeight: 8,
-          borderRadius: BorderRadius.circular(4),
-        ),
-        const SizedBox(height: 4),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(usedLabel, style: Theme.of(context).textTheme.bodySmall),
-            if (freeLabel != null)
-              Text(freeLabel!, style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ),
-      ],
-    );
-  }
 }

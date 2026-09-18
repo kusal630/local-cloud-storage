@@ -1,6 +1,6 @@
-import 'dart:typed_data';
-
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localvault/app/providers.dart';
@@ -66,13 +66,16 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
         title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(
-            icon: const Icon(Icons.download),
+            icon: const Icon(Icons.download_rounded),
             tooltip: 'Download',
             onPressed: () async {
+              final dir = await FilePicker.getDirectoryPath(
+                  dialogTitle: 'Choose download folder');
+              if (dir == null) return;
               ref.read(transferManagerProvider).enqueueDownload(
                     fileId: file.id,
                     name: file.name,
-                    destDir: '/tmp',
+                    destDir: dir,
                     totalBytes: file.size,
                   );
               if (mounted) {
@@ -212,8 +215,9 @@ class _PreviewMetadata extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        Icon(Icons.insert_drive_file,
-            size: 64, color: Theme.of(context).colorScheme.primary),
+        Center(
+            child: VaultFileIcon(
+                name: file.name, isFolder: file.isFolder, size: 72)),
         const SizedBox(height: 16),
         Text(file.name,
             style: Theme.of(context).textTheme.headlineSmall,
@@ -222,13 +226,25 @@ class _PreviewMetadata extends StatelessWidget {
         Card(
           child: Column(
             children: [
-              _infoRow('Type', file.isFolder ? 'Folder' : 'File'),
-              _infoRow('MIME', file.mime ?? 'Unknown'),
-              _infoRow('Size', formatBytes(file.size)),
-              _infoRow('Created', file.createdAt.toLocal().toString()),
-              _infoRow('Modified', file.modifiedAt.toLocal().toString()),
+              _infoRow(context, 'Type', file.isFolder ? 'Folder' : 'File'),
+              _infoRow(context, 'MIME', file.mime ?? 'Unknown'),
+              _infoRow(context, 'Size', formatBytes(file.size)),
+              _infoRow(context, 'Created', formatDateTime(file.createdAt)),
+              _infoRow(context, 'Modified', formatDateTime(file.modifiedAt)),
               if (file.checksum != null)
-                _infoRow('SHA-256', '${file.checksum!.substring(0, 16)}...'),
+                ListTile(
+                  dense: true,
+                  title: const Text('SHA-256'),
+                  subtitle: Text(
+                      '${file.checksum!.substring(0, 16)}… (tap to copy)'),
+                  trailing: const Icon(Icons.copy_rounded, size: 18),
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: file.checksum!));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Checksum copied')),
+                    );
+                  },
+                ),
             ],
           ),
         ),
@@ -236,7 +252,8 @@ class _PreviewMetadata extends StatelessWidget {
     );
   }
 
-  Widget _infoRow(String label, String value) => ListTile(
+  Widget _infoRow(BuildContext context, String label, String value) =>
+      ListTile(
         dense: true,
         title: Text(label),
         subtitle: Text(value),

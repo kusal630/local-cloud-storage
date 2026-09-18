@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/providers.dart';
+import '../../widgets/common.dart';
 
 class ClientConnectScreen extends ConsumerStatefulWidget {
   const ClientConnectScreen({super.key});
@@ -29,11 +31,19 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
   }
 
   Future<void> _connect() async {
-    final url = _urlController.text.trim();
+    final url = _urlController.text.trim().replaceFirst(RegExp(r'/$'), '');
     final code = _codeController.text.trim();
     final name = _nameController.text.trim();
     if (url.isEmpty || code.isEmpty) {
       setState(() => _error = 'Server URL and pairing code are required.');
+      return;
+    }
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      setState(() => _error = 'URL must start with http:// (LAN address).');
+      return;
+    }
+    if (code.length != 6) {
+      setState(() => _error = 'Pairing code is 6 digits.');
       return;
     }
     setState(() {
@@ -45,10 +55,15 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
       await authService.pair(
         serverUrl: url,
         pairingCode: code,
-        deviceName: name,
+        deviceName: name.isEmpty ? 'Client Device' : name,
       );
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('last_server_url', url);
+      } catch (_) {}
       if (mounted) context.go('/client/files');
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;
@@ -57,13 +72,27 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      final last = prefs.getString('last_server_url');
+      if (last != null && mounted) _urlController.text = last;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('Connect to Host')),
-      body: ListView(
-        padding: const EdgeInsets.all(24),
-        children: [
-          // QR scan button
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(
+            padding: const EdgeInsets.all(24),
+            children: [
+              const SectionHeader(title: 'STEP 1 — SCAN'),
+              // QR scan button
           OutlinedButton.icon(
             onPressed: () => setState(() => _scanning = !_scanning),
             icon: Icon(_scanning ? Icons.close : Icons.qr_code_scanner),
@@ -75,14 +104,19 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
               height: 250,
               child: MobileScanner(
                 onDetect: (capture) {
-                  final code = capture.barcodes.first.rawValue;
+                  final code = capture.barcodes.firstOrNull?.rawValue;
                   if (code == null) return;
-                  // Expected: localvault://http://192.168.x.x:port
-                  final cleaned = code
-                      .replaceFirst('localvault://', '')
-                      .replaceFirst('https://', 'http://');
+                  // Expected: localvault://192.168.x.x:8484 (host path without scheme)
+                  var cleaned = code.replaceFirst('localvault://', '').trim();
+                  if (!cleaned.startsWith('http')) {
+                    cleaned = 'http://$cleaned';
+                  }
+                  cleaned = cleaned.replaceFirst('https://', 'http://');
                   _urlController.text = cleaned;
                   setState(() => _scanning = false);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('QR scanned — enter code to connect')),
+                  );
                 },
               ),
             ),
@@ -90,8 +124,7 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
           const SizedBox(height: 24),
 
           // Manual entry
-          Text('Manual Entry',
-              style: Theme.of(context).textTheme.titleMedium),
+          const SectionHeader(title: 'STEP 2 — ENTER CODE'),
           const SizedBox(height: 8),
           TextField(
             controller: _urlController,
@@ -126,20 +159,38 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
-              child: Text(_error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              child: Card(
+                color: colors.errorContainer.withValues(alpha: 0.6),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(_error!,
+                      style:
+                          TextStyle(color: colors.onErrorContainer)),
+                ),
+              ),
             ),
 
-          FilledButton(
+          FilledButton.icon(
             onPressed: _loading ? null : _connect,
-            child: _loading
+            icon: _loading
                 ? const SizedBox(
                     height: 20,
                     width: 20,
                     child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('Connect'),
+                : const Icon(Icons.link_rounded),
+            label: Text(_loading ? 'Connecting…' : 'Connect'),
           ),
-        ],
+          const SizedBox(height: 12),
+          Text(
+            'Both devices must be on the same Wi-Fi. Code expires in 5 minutes. Traffic is LAN-only HTTP.',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: colors.outline),
+          ),
+            ],
+          ),
+        ),
       ),
     );
   }

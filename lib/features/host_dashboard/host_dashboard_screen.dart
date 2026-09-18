@@ -62,54 +62,77 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.circle,
-                          size: 12,
-                          color: server.isRunning ? Colors.green : Colors.red),
-                      const SizedBox(width: 8),
-                      Text(
-                        server.isRunning ? 'Running' : 'Stopped',
-                        style: Theme.of(context).textTheme.titleMedium,
+                      Row(
+                        children: [
+                          StatusPill(
+                            label: server.isRunning ? 'RUNNING' : 'STOPPED',
+                            color: server.isRunning
+                                ? const Color(0xFF43A047)
+                                : Theme.of(context).colorScheme.error,
+                          ),
+                          const SizedBox(width: 8),
+                          const StatusPill(
+                            label: 'LAN-ONLY :8484',
+                            color: Color(0xFF0E7C7B),
+                          ),
+                        ],
                       ),
+                      const SizedBox(height: 16),
+                      const SectionHeader(title: 'CONNECT'),
+                      if (server.isRunning) ...[
+                        const Text('Server URL'),
+                        const SizedBox(height: 4),
+                        _ServerUrls(server: server),
+                        const SizedBox(height: 12),
+                        const Text('Pairing Code'),
+                        const SizedBox(height: 4),
+                        _PairingSection(vault: vault, server: server),
+                      ],
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  if (server.isRunning) ...[
-                    Text('Server URL',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    const SizedBox(height: 4),
-                    _ServerUrls(server: server),
-                    const SizedBox(height: 12),
-                    Text('Pairing Code',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    const SizedBox(height: 4),
-                    _PairingSection(vault: vault, server: server),
-                    const SizedBox(height: 16),
-                    Text('Connected Devices',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    const SizedBox(height: 4),
-                    _DevicesList(vault: vault),
-                    const SizedBox(height: 16),
-                    Text('Storage',
-                        style: Theme.of(context).textTheme.titleSmall),
-                    const SizedBox(height: 4),
-                    _StorageInfo(vault: vault),
-                  ],
-                ],
+                ),
               ),
-            ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SectionHeader(title: 'DEVICES'),
+                      _DevicesList(vault: vault),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SectionHeader(title: 'STORAGE'),
+                      _StorageInfo(vault: vault),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -162,9 +185,9 @@ class _PairingSectionState extends State<_PairingSection> {
     return Column(
       children: [
         QrImageView(
-          data: 'localvault://${server.lanUrl ?? 'localhost:${server.port}'}',
+          data: 'localvault://${(server.lanUrl ?? 'localhost:${server.port}').replaceFirst(RegExp(r'^https?://'), '')}',
           version: QrVersions.auto,
-          size: 160,
+          size: 180,
         ),
         const SizedBox(height: 12),
         SelectableText(
@@ -200,28 +223,45 @@ class _DevicesListState extends ConsumerState<_DevicesList> {
   @override
   Widget build(BuildContext context) {
     final devices = widget.vault.devices.listAll();
-    if (devices.isEmpty) return const Text('No devices connected yet.');
+    if (devices.isEmpty) {
+      return const EmptyState(
+        icon: Icons.devices_other_rounded,
+        title: 'No devices yet',
+        subtitle: 'Pair a phone or desktop with the QR code above.',
+      );
+    }
     return Column(
       children: devices
-          .map((d) => ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading:
-                    Icon(d.isCurrent ? Icons.computer : Icons.phone_android),
-                title: Text(d.name),
-                subtitle: Text(d.lastSeenAt != null
-                    ? 'Last seen ${d.lastSeenAt}'
-                    : 'Just paired'),
-                trailing: d.isCurrent
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.block, size: 20),
-                        tooltip: 'Revoke',
-                        onPressed: () {
-                          widget.vault.devices.revoke(d.id);
-                          setState(() {});
-                        },
-                      ),
+          .map((d) => Card(
+                margin: const EdgeInsets.symmetric(vertical: 3),
+                child: ListTile(
+                  dense: true,
+                  leading: VaultFileIcon(
+                      name: d.isCurrent ? 'host' : 'phone',
+                      isFolder: false,
+                      size: 36),
+                  title: Text(d.name),
+                  subtitle: Text(d.lastSeenAt != null
+                      ? 'Last seen ${formatDateTime(d.lastSeenAt)}'
+                      : 'Just paired'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (d.isCurrent)
+                        const StatusPill(
+                            label: 'HOST', color: Color(0xFF0E7C7B))
+                      else
+                        IconButton(
+                          icon: const Icon(Icons.block_rounded, size: 20),
+                          tooltip: 'Revoke',
+                          onPressed: () {
+                            widget.vault.devices.revoke(d.id);
+                            setState(() {});
+                          },
+                        ),
+                    ],
+                  ),
+                ),
               ))
           .toList(),
     );
@@ -246,12 +286,28 @@ class _StorageInfoState extends ConsumerState<_StorageInfo> {
         }
         if (!snapshot.hasData) return const LoadingIndicator();
         final status = snapshot.data;
+        final total = (status.total as int);
+        final free = (status.free as int);
+        final used = total - free;
+        final vaultUsage = (status.vaultUsage as int);
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _row('Total', formatBytes(status.total)),
-            _row('Free', formatBytes(status.free)),
-            _row('Vault', formatBytes(status.vaultUsage)),
-            _row('Trash', formatBytes(status.trashUsage)),
+            StorageMeter(
+              fraction: total > 0 ? used / total : 0,
+              usedLabel: 'Used ${formatBytes(used)}',
+              freeLabel: 'Free ${formatBytes(free)}',
+              color: Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(height: 12),
+            StorageMeter(
+              fraction: total > 0 ? vaultUsage / total : 0,
+              usedLabel: 'Vault ${formatBytes(vaultUsage)}',
+              freeLabel: 'Trash ${formatBytes(status.trashUsage as int)}',
+            ),
+            const SizedBox(height: 8),
+            _row('Total', formatBytes(total)),
+            _row('Free', formatBytes(free)),
           ],
         );
       },

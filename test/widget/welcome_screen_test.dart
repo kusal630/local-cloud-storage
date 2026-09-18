@@ -12,7 +12,7 @@ void main() {
     );
 
     expect(find.text('LocalVault'), findsOneWidget);
-    expect(find.text('Your private local cloud storage'), findsOneWidget);
+    expect(find.textContaining('Your private local cloud'), findsOneWidget);
     expect(find.text('Start Storage Node'), findsOneWidget);
     expect(find.text('Connect to Storage Node'), findsOneWidget);
     expect(find.byIcon(Icons.cloud_off_outlined), findsOneWidget);
