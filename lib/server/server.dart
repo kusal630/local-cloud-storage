@@ -5,8 +5,9 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
 import '../core/constants/app_constants.dart';
-import '../core/logging/app_logger.dart';
 import '../core/discovery/beacon.dart';
+import '../core/host/host_service_control.dart';
+import '../core/logging/app_logger.dart';
 import '../data/datasources/vault.dart';
 import 'middleware/auth_middleware.dart';
 import 'routes/api_router.dart';
@@ -109,6 +110,16 @@ class LocalVaultServer {
       } catch (e) {
         logWarn('LAN discovery beacon failed: $e');
       }
+      // Android: keep the process alive in the background so the cloud
+      // stays reachable (foreground service + wake lock).
+      try {
+        await HostServiceControl.start(
+          label: vault.settings.hostDeviceName,
+          port: _port!,
+        );
+      } catch (e) {
+        logWarn('Host foreground service failed: $e');
+      }
       return _port!;
     } catch (e, st) {
       _status = HostServerStatus.error;
@@ -135,6 +146,9 @@ class LocalVaultServer {
   }
 
   Future<void> stop() async {
+    try {
+      await HostServiceControl.stop();
+    } catch (_) {}
     try {
       _beacon?.stop();
     } catch (_) {}

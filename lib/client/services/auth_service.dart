@@ -67,9 +67,10 @@ class AuthService {
     }
   }
 
-  /// Logs in with the host password (alternative to pairing).
+  /// Logs in with username + host password (alternative to pairing).
   Future<void> login({
     required String serverUrl,
+    required String username,
     required String password,
     required String deviceName,
   }) async {
@@ -78,7 +79,11 @@ class AuthService {
     try {
       final response = await api.dio.post(
         '/auth/login',
-        data: {'password': password, 'deviceName': deviceName},
+        data: {
+          'username': username,
+          'password': password,
+          'deviceName': deviceName
+        },
       );
       final data = LocalVaultApi.decodeData(response);
       final access = data['accessToken'] as String;

@@ -6,9 +6,26 @@ A cross-platform local cloud storage application that turns local storage (exter
 
 ## 📱 Download
 
-- **Android APK (v1.0.0)**: [GitHub Releases → LocalVault v1.0.0](https://github.com/kusal630/local-cloud-storage/releases/tag/v1.0.0)
-  (`localvault-v1.0.0.apk`, 82.5 MB, SHA-256 `258ac83a…c98bb`; also mirrored at [`dist/localvault-v1.0.0.apk`](dist/localvault-v1.0.0.apk))
+- **Android APK (v1.1.0)**: [GitHub Releases → LocalVault v1.1.0](https://github.com/kusal630/local-cloud-storage/releases/tag/v1.1.0)
 - Install: download → open the file → allow “Install unknown apps” → install.
+
+## ☁️ Your phone as an always-on cloud (v1.1.0)
+
+1. **Host on Android**: Welcome → Start Storage Node. Pick a folder (defaults to
+   the app's external storage — writable without special permissions, works with
+   SD-card adopted storage). The node keeps running in the background via a
+   foreground service + wake lock, so the cloud stays reachable while the phone
+   is on.
+2. **Username + password**: set them during host setup. Anyone reaching the node
+   logs in with `username + password` (or pairs with a QR + 6-digit code).
+3. **Access from anywhere**: any network route to the phone works — same Wi-Fi,
+   phone hotspot, or a VPN such as Tailscale/ZeroTier on both devices. For true
+   anywhere-access without a VPN, port-forward the server port to the phone on
+   your router. See Host Dashboard → Remote Access.
+4. **Auto Backup**: on the client, Settings → Auto Backup → watch folders
+   (e.g. DCIM/Camera) → Backup now. New photos/files upload to
+   `Auto Backup/<device>`; already-uploaded content is skipped by checksum,
+   like a normal cloud backup.
 
 ## ✨ What's new (Best-in-World wave)
 

@@ -94,4 +94,15 @@ abstract class FileKinds {
       secure: parts[4] == 'https',
     );
   }
+
+  /// Username rules for cloud login: 3-32 chars, letters/digits/._-
+  static bool isValidUsername(String value) =>
+      RegExp(r'^[A-Za-z0-9._-]{3,32}$').hasMatch(value);
+
+  static String sanitizeUsername(String value) {
+    final cleaned =
+        value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9._-]'), '');
+    if (cleaned.length > 32) return cleaned.substring(0, 32);
+    return cleaned;
+  }
 }

@@ -4,6 +4,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:localvault/core/utils/file_kinds.dart';
 import 'package:localvault/data/datasources/vault.dart';
 import 'package:localvault/server/server.dart';
 import 'package:localvault/core/logging/app_logger.dart' as log;
@@ -14,12 +16,14 @@ import 'package:localvault/widgets/common.dart';
 class HostSetupState {
   final String? storagePath;
   final String deviceName;
+  final String username;
   final String password;
   final bool loading;
   final String? error;
   const HostSetupState({
     this.storagePath,
     this.deviceName = 'My LocalVault',
+    this.username = '',
     this.password = '',
     this.loading = false,
     this.error,
@@ -27,6 +31,7 @@ class HostSetupState {
   HostSetupState copyWith({
     String? storagePath,
     String? deviceName,
+    String? username,
     String? password,
     bool? loading,
     String? error,
@@ -34,6 +39,7 @@ class HostSetupState {
       HostSetupState(
         storagePath: storagePath ?? this.storagePath,
         deviceName: deviceName ?? this.deviceName,
+        username: username ?? this.username,
         password: password ?? this.password,
         loading: loading ?? this.loading,
         error: error,
@@ -49,7 +55,19 @@ class HostSetupNotifier extends StateNotifier<HostSetupState> {
 
   void setPath(String p) => state = state.copyWith(storagePath: p);
   void setName(String n) => state = state.copyWith(deviceName: n);
+  void setUsername(String u) =>
+      state = state.copyWith(username: FileKinds.sanitizeUsername(u));
   void setPassword(String p) => state = state.copyWith(password: p);
+
+  /// On Android, default to the app's external files dir (writable without
+  /// special permissions, incl. SD-card adopted storage).
+  Future<void> ensureDefaultPath() async {
+    if (state.storagePath != null || !Platform.isAndroid) return;
+    try {
+      final dir = await getExternalStorageDirectory();
+      if (dir != null) setPath(dir.path);
+    } catch (_) {}
+  }
 
   Future<void> pickStorage() async {
     final result = await FilePicker.getDirectoryPath(
@@ -68,6 +86,11 @@ class HostSetupNotifier extends StateNotifier<HostSetupState> {
       state = state.copyWith(error: 'Password must be at least 6 characters.');
       return;
     }
+    if (!FileKinds.isValidUsername(state.username)) {
+      state = state.copyWith(
+          error: 'Username must be 3-32 chars: letters, digits, . _ -');
+      return;
+    }
     state = state.copyWith(loading: true, error: null);
     try {
       final storageRoot = Directory(path);
@@ -75,6 +98,7 @@ class HostSetupNotifier extends StateNotifier<HostSetupState> {
       await vault.completeSetup(
         password: state.password,
         deviceName: state.deviceName,
+        username: state.username,
       );
       final server = LocalVaultServer(vault: vault);
       final port = await server.start();
@@ -105,6 +129,7 @@ class HostSetupScreen extends ConsumerStatefulWidget {
 
 class _HostSetupScreenState extends ConsumerState<HostSetupScreen> {
   late final TextEditingController _nameController;
+  late final TextEditingController _usernameController;
   late final TextEditingController _passwordController;
   bool _obscure = true;
 
@@ -113,12 +138,16 @@ class _HostSetupScreenState extends ConsumerState<HostSetupScreen> {
     super.initState();
     final s = ref.read(hostSetupProvider);
     _nameController = TextEditingController(text: s.deviceName);
+    _usernameController = TextEditingController(text: s.username);
     _passwordController = TextEditingController(text: s.password);
+    Future.microtask(
+        () => ref.read(hostSetupProvider.notifier).ensureDefaultPath());
   }
 
   @override
   void dispose() {
     _nameController.dispose();
+    _usernameController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
@@ -173,6 +202,17 @@ class _HostSetupScreenState extends ConsumerState<HostSetupScreen> {
                   ),
                   textInputAction: TextInputAction.next,
                   onChanged: notifier.setName,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _usernameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Username (for cloud login)',
+                    hintText: 'e.g. kusal',
+                    prefixIcon: Icon(Icons.person_rounded),
+                  ),
+                  textInputAction: TextInputAction.next,
+                  onChanged: notifier.setUsername,
                 ),
                 const SizedBox(height: 12),
                 TextField(
@@ -238,7 +278,9 @@ class _HostSetupScreenState extends ConsumerState<HostSetupScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'A hidden .localvault folder (SQLite + blobs) is created inside your selection. Server binds LAN-only on :8484.',
+                  'A hidden .localvault folder (SQLite + blobs) is created inside your selection. '
+                  'On Android the node keeps running in the background (foreground service) so your cloud stays reachable. '
+                  'Anyone on the route to this device reaches it on the shown port — share your username + password only with people you trust.',
                   style: Theme.of(context)
                       .textTheme
                       .bodySmall

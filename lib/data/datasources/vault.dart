@@ -9,6 +9,7 @@ import '../../core/constants/app_constants.dart';
 import '../../core/errors/app_exceptions.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/utils/cipher.dart';
+import '../../core/utils/file_kinds.dart';
 import '../../core/utils/path_guard.dart';
 import '../database/vault_database.dart';
 import '../models/storage_status.dart';
@@ -118,6 +119,7 @@ class Vault {
   Future<void> completeSetup({
     required String password,
     required String deviceName,
+    String username = 'owner',
   }) async {
     if (password.isEmpty) {
       throw const ValidationException('Password cannot be empty.');
@@ -125,9 +127,15 @@ class Vault {
     if (password.length < 6) {
       throw const ValidationException('Password must be at least 6 characters.');
     }
+    final clean = FileKinds.sanitizeUsername(username);
+    if (!FileKinds.isValidUsername(clean)) {
+      throw const ValidationException(
+          'Username must be 3-32 chars: letters, digits, . _ -');
+    }
     final hash = await Cipher.hashPassword(password);
     settings.passwordHash = hash;
     settings.hostDeviceName = deviceName;
+    settings.ownerUsername = clean;
     settings.setupComplete = true;
   }
 

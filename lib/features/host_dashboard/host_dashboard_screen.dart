@@ -124,6 +124,19 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      const SectionHeader(title: 'REMOTE ACCESS'),
+                      _RemoteAccess(vault: vault, server: server),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       const SectionHeader(title: 'STORAGE'),
                       _StorageInfo(vault: vault),
                     ],
@@ -528,8 +541,47 @@ class _HostSettingsState extends State<_HostSettings> {
   }
 }
 
-class _ActivityFeed extends StatelessWidget {
+/// Explains how this node is reached: any network path to the device works
+/// (same Wi-Fi, phone hotspot, Tailscale/ZeroTier VPN); true anywhere-access
+/// needs a VPN or a port-forward of the server port on the router.
+class _RemoteAccess extends StatelessWidget {
   final dynamic vault;
+  final dynamic server;
+  const _RemoteAccess({required this.vault, required this.server});
+
+  @override
+  Widget build(BuildContext context) {
+    String username = 'owner';
+    int port = 8484;
+    try {
+      username = '${vault.settings.ownerUsername}';
+    } catch (_) {}
+    try {
+      port = server.port as int;
+    } catch (_) {}
+    return Column(
+      children: [
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.person_rounded),
+          title: const Text('Cloud login'),
+          subtitle: Text('Username: $username (password you set)'),
+        ),
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.router_rounded),
+          title: const Text('Anywhere access'),
+          subtitle: Text(
+              'Port $port. Same network works directly. From anywhere: join the same Tailscale/ZeroTier VPN on both devices, or port-forward $port to this device on your router.'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ActivityFeed extends StatelessWidget {  final dynamic vault;
   const _ActivityFeed({required this.vault});
 
   static const _icons = {

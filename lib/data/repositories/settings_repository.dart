@@ -11,6 +11,7 @@ class SettingsRepository {
   static const String storageRootKey = 'storage_root';
   static const String serverPortKey = 'server_port';
   static const String hostDeviceNameKey = 'host_device_name';
+  static const String ownerUsernameKey = 'owner_username';
   static const String trashRetentionDaysKey = 'trash_retention_days';
   static const String deviceQuotaBytesKey = 'device_quota_bytes';
   static const String tlsCertPathKey = 'tls_cert_path';
@@ -59,6 +60,12 @@ class SettingsRepository {
       get(hostDeviceNameKey) ?? 'My LocalVault';
 
   set hostDeviceName(String value) => set(hostDeviceNameKey, value);
+
+  /// Owner login name for password access. Defaults to 'owner'.
+  String get ownerUsername =>
+      (get(ownerUsernameKey) ?? '').isEmpty ? 'owner' : get(ownerUsernameKey)!;
+
+  set ownerUsername(String value) => set(ownerUsernameKey, value);
 
   /// Trash auto-purge retention in days. 30 by default, 0 = keep forever.
   int get trashRetentionDays {

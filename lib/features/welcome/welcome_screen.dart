@@ -92,7 +92,7 @@ class WelcomeScreen extends ConsumerWidget {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'HOST on desktop shares a folder on :8484. CLIENT on any device browses, uploads and streams over your Wi-Fi.',
+                  'HOST on this phone or desktop shares storage on :8484 and keeps running in the background. CLIENT on any device browses, uploads and backs up over any route to it.',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.outline,

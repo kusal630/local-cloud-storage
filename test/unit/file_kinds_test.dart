@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:localvault/client/services/backup_service.dart';
 import 'package:localvault/core/utils/file_kinds.dart';
 
 void main() {
@@ -59,5 +60,23 @@ void main() {
         FileKinds.beaconDecode('localvault-v1|a|1.2.3.4|99999|http'),
         isNull);
     expect(FileKinds.beaconDecode('localvault-v1|||8484|http'), isNull);
+  });
+
+  test('username rules accept sane names and reject the rest', () {
+    expect(FileKinds.isValidUsername('kusal'), isTrue);
+    expect(FileKinds.isValidUsername('ku-sal_99.x'), isTrue);
+    expect(FileKinds.isValidUsername('ab'), isFalse);
+    expect(FileKinds.isValidUsername('has space'), isFalse);
+    expect(FileKinds.isValidUsername('UPPER'), isTrue);
+    expect(FileKinds.sanitizeUsername('  Ku Sal! '), 'kusal');
+  });
+
+  test('backup shouldSkip filters junk and huge files', () {
+    expect(BackupService.shouldSkip('IMG_001.jpg', 1024), isFalse);
+    expect(BackupService.shouldSkip('.nomedia', 10), isTrue);
+    expect(BackupService.shouldSkip('a.tmp', 10), isTrue);
+    expect(BackupService.shouldSkip('a.jpg', 0), isTrue);
+    expect(BackupService.shouldSkip(
+        'a.mp4', BackupService.maxFileBytes + 1), isTrue);
   });
 }

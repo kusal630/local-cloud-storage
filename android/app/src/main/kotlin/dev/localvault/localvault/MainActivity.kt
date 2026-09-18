@@ -9,6 +9,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     companion object {
         const val DISK_CHANNEL = "dev.localvault.localvault/disk"
+        const val HOST_CHANNEL = "dev.localvault.localvault/host"
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -33,6 +34,33 @@ class MainActivity : FlutterActivity() {
                 }
             } else {
                 result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            HOST_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "startHost" -> {
+                    try {
+                        val label = call.argument<String>("label")
+                            ?: "LocalVault"
+                        val port = call.argument<Int>("port") ?: 8484
+                        HostService.start(this, label, port)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("HOST_START_FAILED", e.message, null)
+                    }
+                }
+                "stopHost" -> {
+                    try {
+                        HostService.stop(this)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("HOST_STOP_FAILED", e.message, null)
+                    }
+                }
+                else -> result.notImplemented()
             }
         }
     }

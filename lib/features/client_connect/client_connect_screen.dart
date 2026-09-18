@@ -19,10 +19,14 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
   final _urlController = TextEditingController();
   final _codeController = TextEditingController();
   final _nameController = TextEditingController(text: 'Client Device');
+  final _userController = TextEditingController();
+  final _passController = TextEditingController();
   bool _loading = false;
   String? _error;
   bool _scanning = false;
   bool _trustHttps = false;
+  bool _usePassword = false;
+  bool _obscurePass = true;
   DiscoveryListener? _discovery;
   List<DiscoveredNode> _nearby = [];
 
@@ -31,6 +35,8 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
     _urlController.dispose();
     _codeController.dispose();
     _nameController.dispose();
+    _userController.dispose();
+    _passController.dispose();
     _discovery?.stop();
     super.dispose();
   }
@@ -39,17 +45,31 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
     final url = _urlController.text.trim().replaceFirst(RegExp(r'/$'), '');
     final code = _codeController.text.trim();
     final name = _nameController.text.trim();
-    if (url.isEmpty || code.isEmpty) {
-      setState(() => _error = 'Server URL and pairing code are required.');
+    final username = _userController.text.trim();
+    final password = _passController.text;
+    if (url.isEmpty) {
+      setState(() => _error = 'Server URL is required.');
       return;
     }
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      setState(() => _error = 'URL must start with http:// (LAN address).');
+      setState(() => _error = 'URL must start with http:// or https://.');
       return;
     }
-    if (code.length != 6) {
-      setState(() => _error = 'Pairing code is 6 digits.');
-      return;
+    if (_usePassword) {
+      if (username.isEmpty || password.isEmpty) {
+        setState(
+            () => _error = 'Username and password are required.');
+        return;
+      }
+    } else {
+      if (code.isEmpty) {
+        setState(() => _error = 'Pairing code is required.');
+        return;
+      }
+      if (code.length != 6) {
+        setState(() => _error = 'Pairing code is 6 digits.');
+        return;
+      }
     }
     setState(() {
       _loading = true;
@@ -58,11 +78,20 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
     try {
       final authService = ref.read(authServiceProvider);
       ref.read(apiClientProvider).setTrustSelfSigned(_trustHttps);
-      await authService.pair(
-        serverUrl: url,
-        pairingCode: code,
-        deviceName: name.isEmpty ? 'Client Device' : name,
-      );
+      if (_usePassword) {
+        await authService.login(
+          serverUrl: url,
+          username: username,
+          password: password,
+          deviceName: name.isEmpty ? 'Client Device' : name,
+        );
+      } else {
+        await authService.pair(
+          serverUrl: url,
+          pairingCode: code,
+          deviceName: name.isEmpty ? 'Client Device' : name,
+        );
+      }
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('last_server_url', url);
@@ -198,7 +227,13 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
           const SizedBox(height: 24),
 
           // Manual entry
-          const SectionHeader(title: 'STEP 2 — ENTER CODE'),
+          SectionHeader(
+            title: _usePassword ? 'STEP 2 — LOGIN' : 'STEP 2 — ENTER CODE',
+            action: TextButton(
+              onPressed: () => setState(() => _usePassword = !_usePassword),
+              child: Text(_usePassword ? 'Use pairing code' : 'Use password'),
+            ),
+          ),
           const SizedBox(height: 8),
           TextField(
             controller: _urlController,
@@ -210,16 +245,44 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
             keyboardType: TextInputType.url,
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _codeController,
-            decoration: const InputDecoration(
-              labelText: 'Pairing Code',
-              hintText: '6-digit code',
-              prefixIcon: Icon(Icons.pin),
+          if (_usePassword) ...[
+            TextField(
+              controller: _userController,
+              decoration: const InputDecoration(
+                labelText: 'Username',
+                hintText: 'Cloud owner username',
+                prefixIcon: Icon(Icons.person_rounded),
+              ),
             ),
-            keyboardType: TextInputType.number,
-            maxLength: 6,
-          ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passController,
+              obscureText: _obscurePass,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                prefixIcon: const Icon(Icons.lock_rounded),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscurePass
+                      ? Icons.visibility_rounded
+                      : Icons.visibility_off_rounded),
+                  onPressed: () =>
+                      setState(() => _obscurePass = !_obscurePass),
+                ),
+              ),
+              onSubmitted: (_) => _connect(),
+            ),
+          ] else ...[
+            TextField(
+              controller: _codeController,
+              decoration: const InputDecoration(
+                labelText: 'Pairing Code',
+                hintText: '6-digit code',
+                prefixIcon: Icon(Icons.pin),
+              ),
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+            ),
+          ],
           const SizedBox(height: 12),
           TextField(
             controller: _nameController,
@@ -265,7 +328,7 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
           ),
           const SizedBox(height: 12),
           Text(
-            'Both devices must be on the same Wi-Fi. Code expires in 5 minutes. Traffic is LAN-only HTTP.',
+            'Reach the node from anywhere with a route to it: same Wi-Fi, phone hotspot, or a VPN such as Tailscale. Pairing codes expire in 5 minutes; password login uses your cloud username.',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall

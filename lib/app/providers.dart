@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../client/api_client.dart';
 import '../client/session_store.dart';
 import '../client/services/auth_service.dart';
+import '../client/services/backup_service.dart';
 import '../client/services/file_service.dart';
 import '../client/services/transfer_manager.dart';
 import '../data/datasources/vault.dart';
@@ -42,6 +43,15 @@ final fileServiceProvider = Provider<FileService>((ref) {
 
 final transferManagerProvider = ChangeNotifierProvider<TransferManager>((ref) {
   return TransferManager(ref.watch(fileServiceProvider));
+});
+
+final backupServiceProvider = ChangeNotifierProvider<BackupService>((ref) {
+  final svc = BackupService(
+    ref.watch(fileServiceProvider),
+    ref.watch(transferManagerProvider),
+  );
+  svc.load();
+  return svc;
 });
 
 // ---------------------------------------------------------------------------

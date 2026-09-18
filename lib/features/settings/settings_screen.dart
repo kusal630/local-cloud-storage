@@ -1,9 +1,11 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localvault/app/app.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/pin_store.dart';
+import 'package:localvault/widgets/common.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -73,6 +75,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
           ),
+          const _BackupSection(),
           _SettingsSection(
             title: 'Account',
             children: [
@@ -248,8 +251,96 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 }
 
-class _SettingsSection extends StatelessWidget {
-  final String title;
+/// Auto Backup: watches chosen folders and uploads new files to
+/// `Auto Backup/<device>` on the cloud. Runs while the app is open.
+class _BackupSection extends ConsumerWidget {
+  const _BackupSection();
+
+  Future<void> _runNow(BuildContext context, WidgetRef ref) async {
+    final session = ref.read(sessionStoreProvider);
+    final deviceName =
+        await session.getDeviceName() ?? 'device';
+    if (!context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref
+          .read(backupServiceProvider)
+          .runBackup(deviceName: deviceName);
+      final svc = ref.read(backupServiceProvider);
+      messenger.showSnackBar(
+        SnackBar(
+            content: Text(
+                'Backup done: ${svc.lastAdded} new, ${svc.lastScanned} scanned.')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Backup failed: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final backup = ref.watch(backupServiceProvider);
+    return _SettingsSection(
+      title: 'Auto Backup',
+      children: [
+        SwitchListTile(
+          secondary: const Icon(Icons.cloud_upload_rounded),
+          title: const Text('Backup watched folders'),
+          subtitle: Text(backup.lastRun == null
+              ? 'New photos & files upload to Auto Backup'
+              : 'Last run ${formatDateTime(backup.lastRun!)}: '
+                  '${backup.lastAdded} new / ${backup.lastScanned} scanned'),
+          value: backup.enabled,
+          onChanged: (v) =>
+              ref.read(backupServiceProvider).setEnabled(v),
+        ),
+        for (final src in backup.sources)
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.folder_rounded),
+            title: Text(src,
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: IconButton(
+              icon: const Icon(Icons.remove_circle_outline_rounded),
+              onPressed: () => ref
+                  .read(backupServiceProvider)
+                  .removeSource(src),
+            ),
+          ),
+        ListTile(
+          leading: const Icon(Icons.add_rounded),
+          title: const Text('Watch a folder'),
+          subtitle: const Text('e.g. DCIM / Camera, Documents'),
+          onTap: () async {
+            final path = await FilePicker.getDirectoryPath(
+              dialogTitle: 'Choose a folder to back up',
+            );
+            if (path != null) {
+              await ref.read(backupServiceProvider).addSource(path);
+            }
+          },
+        ),
+        ListTile(
+          leading: backup.running
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.play_arrow_rounded),
+          title: Text(backup.running ? 'Backing up…' : 'Backup now'),
+          subtitle: backup.error == null
+              ? null
+              : Text(backup.error!,
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.error)),
+          onTap: backup.running ? null : () => _runNow(context, ref),
+        ),
+      ],
+    );
+  }
+}
+
+class _SettingsSection extends StatelessWidget {  final String title;
   final List<Widget> children;
   const _SettingsSection({required this.title, required this.children});
   @override

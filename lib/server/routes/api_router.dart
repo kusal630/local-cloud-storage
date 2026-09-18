@@ -128,9 +128,11 @@ class ApiHandlers {
     }
     final body = await _jsonBody(request);
     final password = body['password']?.toString() ?? '';
+    final username = body['username']?.toString() ?? 'owner';
     final deviceName = FileNames.sanitize(
         body['deviceName']?.toString().trim() ?? 'Host device');
-    await vault.completeSetup(password: password, deviceName: deviceName);
+    await vault.completeSetup(
+        password: password, deviceName: deviceName, username: username);
     logInfo('Host setup completed for "$deviceName"');
 
     final device = tokens.createDevice(
@@ -155,9 +157,14 @@ class ApiHandlers {
     }
     final body = await _jsonBody(request);
     final password = body['password']?.toString() ?? '';
+    final username = body['username']?.toString().trim() ?? '';
     final deviceName = FileNames.sanitize(
         body['deviceName']?.toString().trim() ?? 'Client device');
 
+    if (username.isEmpty ||
+        username.toLowerCase() != vault.settings.ownerUsername.toLowerCase()) {
+      return ApiResponses.unauthorized('Invalid username or password.');
+    }
     final ok = await vault.verifyPassword(password);
     if (!ok) {
       return ApiResponses.unauthorized('Invalid password.');
