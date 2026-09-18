@@ -99,12 +99,19 @@ class _SharedLinksScreenState extends ConsumerState<SharedLinksScreen> {
                             margin: const EdgeInsets.symmetric(vertical: 4),
                             child: ListTile(
                               leading: VaultFileIcon(
-                                  name: link.fileName, size: 40),
-                              title: Text(link.fileName,
+                                  name: link.isUploadRequest
+                                      ? 'uploaddir'
+                                      : link.fileName,
+                                  isFolder: link.isUploadRequest,
+                                  size: 40),
+                              title: Text(
+                                  link.isUploadRequest
+                                      ? 'Upload → ${link.fileName}'
+                                      : link.fileName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis),
                               subtitle: Text(
-                                  '${link.downloadCount} downloads'
+                                  '${link.isUploadRequest ? 'file request' : '${link.downloadCount} downloads'}'
                                   '${link.hasPassword ? ' • locked' : ''}'
                                   '${link.expiresAt == null ? ' • never expires' : ' • expires ${formatDateTime(link.expiresAt!)}'}\n$url'),
                               isThreeLine: true,

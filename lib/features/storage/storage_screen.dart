@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:localvault/app/providers.dart';
+import 'package:localvault/client/services/file_service.dart';
 import 'package:localvault/data/models/storage_status.dart';
 import 'package:localvault/widgets/common.dart';
 
@@ -117,6 +118,8 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                           ),
                           const SizedBox(height: 16),
                           const _BreakdownCard(),
+                          const SizedBox(height: 16),
+                          const _DuplicatesCard(),
                         ],
                       ),
                     ),
@@ -202,6 +205,123 @@ class _BreakdownCard extends ConsumerWidget {
                 );
               },
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Duplicate finder: groups sharing content, trash extras in one tap.
+class _DuplicatesCard extends ConsumerStatefulWidget {
+  const _DuplicatesCard();
+  @override
+  ConsumerState<_DuplicatesCard> createState() => _DuplicatesCardState();
+}
+
+class _DuplicatesCardState extends ConsumerState<_DuplicatesCard> {
+  List<DuplicateGroup>? _groups;
+  bool _working = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final groups =
+          await ref.read(fileServiceProvider).listDuplicates();
+      if (!mounted) return;
+      setState(() => _groups = groups);
+    } catch (_) {}
+  }
+
+  Future<void> _trashExtras(DuplicateGroup group) async {
+    // Keep the oldest copy, trash the rest.
+    final extras = group.files.skip(1).toList();
+    if (extras.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Trash ${extras.length} duplicate(s)?'),
+        content: Text(
+            'Keeps the oldest copy of "${extras.first.name}" and moves the rest to trash.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Trash')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _working = true);
+    try {
+      final svc = ref.read(fileServiceProvider);
+      for (final f in extras) {
+        await svc.deleteFile(f.id);
+      }
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Cleanup failed: $e')));
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionHeader(title: 'DUPLICATES'),
+            if (_groups == null)
+              const LoadingIndicator()
+            else if (_groups!.isEmpty)
+              Text('No duplicate files — every byte is unique.',
+                  style: Theme.of(context).textTheme.bodySmall)
+            else
+              for (final g in _groups!)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${g.files.length}× ${g.files.first.name} • wastes ${formatBytes(g.wastedBytes)}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: _working
+                                ? null
+                                : () => _trashExtras(g),
+                            child: const Text('Clean'),
+                          ),
+                        ],
+                      ),
+                      for (final f in g.files)
+                        Text('• ${f.name}',
+                            style:
+                                Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
           ],
         ),
       ),

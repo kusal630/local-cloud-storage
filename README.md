@@ -14,6 +14,19 @@ upload, download, share, and back up.
   (open on the phone → allow “Install unknown apps” → install)
 - **Windows / Linux / macOS**: build from source (5 minutes, see below)
 
+## What you can do with it (v1.3.0 research wave)
+
+- **Tags**: label files/folders, filter the whole vault by tag (Nextcloud-style)
+- **Comments + per-file activity** on every preview
+- **File requests**: links that let anyone *upload into* a folder (password + expiry)
+- **Folder download as ZIP** (2 GB / 2000-file cap, streamed)
+- **Duplicate finder** with one-tap cleanup of wasted bytes
+- **Offline files**: pin files locally, badge + filter, works without the host
+- **New notes** and **share-sheet uploads** from any Android app
+- **Biometric unlock** + PIN, **known-device badges** on Nearby nodes
+- **Staggered version pruning** (hourly → daily → weekly, like Syncthing)
+- **Backup ignore patterns** (`*.tmp`, `Screenshots`) Syncthing-style
+
 ## What you can do with it
 
 | Use | How |

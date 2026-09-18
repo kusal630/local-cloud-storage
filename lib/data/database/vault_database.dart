@@ -153,11 +153,29 @@ class VaultDatabase {
     _db.execute('''
       CREATE INDEX IF NOT EXISTS idx_shares_file ON shares(file_id);
     ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS comments (
+        id         TEXT PRIMARY KEY,
+        file_id    TEXT NOT NULL,
+        device_id  TEXT,
+        author     TEXT NOT NULL DEFAULT 'owner',
+        body       TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_comments_file
+        ON comments(file_id, created_at DESC);
+    ''');
 
     // Additive column migrations for pre-existing vaults.
     _ensureColumn('files', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
     _ensureColumn('files', 'last_opened_at', 'INTEGER');
+    _ensureColumn('files', 'tags', "TEXT NOT NULL DEFAULT ''");
     _ensureColumn('upload_sessions', 'replace_file_id', 'TEXT');
+    _ensureColumn('shares', 'mode', "TEXT NOT NULL DEFAULT 'download'");
+    _ensureColumn(
+        'shares', 'target_folder_id', 'TEXT');
 
     // Seed the virtual root folder.
     final roots = _db.select(

@@ -15,12 +15,14 @@ class DiscoveryBeacon {
     required this.deviceName,
     required this.port,
     this.secure = false,
+    this.fingerprint = '',
     this.interval = const Duration(seconds: 2),
   });
 
   final String deviceName;
   final int port;
   final bool secure;
+  final String fingerprint;
   final Duration interval;
 
   RawDatagramSocket? _socket;
@@ -57,6 +59,7 @@ class DiscoveryBeacon {
       host: _host ?? '127.0.0.1',
       port: port,
       secure: secure,
+      fingerprint: fingerprint,
     );
     try {
       socket.send(
@@ -85,6 +88,7 @@ class DiscoveredNode {
     required this.port,
     required this.secure,
     required this.lastSeen,
+    this.fingerprint = '',
   });
 
   final String deviceName;
@@ -92,6 +96,7 @@ class DiscoveredNode {
   final int port;
   final bool secure;
   final DateTime lastSeen;
+  final String fingerprint;
 
   String get url => '${secure ? 'https' : 'http'}://$host:$port';
 }
@@ -123,7 +128,8 @@ class DiscoveryListener {
       if (event != RawSocketEvent.read) return;
       final dg = socket.receive();
       if (dg == null) return;
-      final decoded = FileKinds.beaconDecode(utf8.decode(dg.data, allowMalformed: true).trim());
+      final decoded = FileKinds.beaconDecodeAny(
+          utf8.decode(dg.data, allowMalformed: true).trim());
       if (decoded == null) return;
       final key = '${decoded.host}:${decoded.port}';
       _nodes[key] = DiscoveredNode(
@@ -132,6 +138,7 @@ class DiscoveryListener {
         port: decoded.port,
         secure: decoded.secure,
         lastSeen: DateTime.now(),
+        fingerprint: decoded.fingerprint,
       );
       if (!_controller.isClosed) _controller.add(_pruned());
     });

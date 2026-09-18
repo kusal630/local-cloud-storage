@@ -5,11 +5,38 @@ import 'package:dio/dio.dart';
 
 import '../../data/models/audit_entry.dart';
 import '../../data/models/device.dart';
+import '../../data/models/file_comment.dart';
 import '../../data/models/file_version.dart';
 import '../../data/models/shared_link.dart';
 import '../../data/models/storage_status.dart';
 import '../../data/models/vault_file.dart';
 import '../api_client.dart';
+
+class DuplicateFile {
+  DuplicateFile({
+    required this.id,
+    required this.parentId,
+    required this.name,
+    required this.modifiedAt,
+  });
+  final String id;
+  final String parentId;
+  final String name;
+  final DateTime modifiedAt;
+}
+
+class DuplicateGroup {
+  DuplicateGroup({
+    required this.checksum,
+    required this.size,
+    required this.wastedBytes,
+    required this.files,
+  });
+  final String checksum;
+  final int size;
+  final int wastedBytes;
+  final List<DuplicateFile> files;
+}
 
 class HostSettings {
   HostSettings({
@@ -105,6 +132,146 @@ class FileService {
       final items = (data['items'] as List).cast<Map<String, dynamic>>();
       return items.map(_parseFile).toList();
     } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<VaultFile> setTags(String id, List<String> tags) async {
+    try {
+      final response =
+          await _dio.patch('/files/$id/tags', data: {'tags': tags});
+      final data = LocalVaultApi.decodeData(response);
+      return _parseFile(data['item'] as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<({String tag, int count})>> listTags() async {
+    try {
+      final response = await _dio.get('/tags');
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return [
+        for (final m in items)
+          (tag: m['tag'] as String, count: (m['count'] as num).toInt())
+      ];
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<VaultFile>> listByTag(String tag) async {
+    try {
+      final response =
+          await _dio.get('/files/by-tag', queryParameters: {'tag': tag});
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseFile).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<FileComment>> listComments(String fileId) async {
+    try {
+      final response = await _dio.get('/files/$fileId/comments');
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseComment).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<FileComment> addComment(String fileId, String body) async {
+    try {
+      final response =
+          await _dio.post('/files/$fileId/comments', data: {'body': body});
+      final data = LocalVaultApi.decodeData(response);
+      return _parseComment(data['item'] as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<void> deleteComment(String fileId, String commentId) async {
+    try {
+      final response =
+          await _dio.delete('/files/$fileId/comments/$commentId');
+      LocalVaultApi.decodeData(response);
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<AuditEntry>> activityFor(String targetId,
+      {int limit = 50}) async {
+    try {
+      final response = await _dio.get('/activity/for',
+          queryParameters: {'target': targetId, 'limit': limit});
+      final data = LocalVaultApi.decodeData(response);
+      final items = (data['items'] as List).cast<Map<String, dynamic>>();
+      return items.map(_parseAudit).toList();
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<List<DuplicateGroup>> listDuplicates() async {
+    try {
+      final response = await _dio.get('/storage/duplicates');
+      final data = LocalVaultApi.decodeData(response);
+      final groups = (data['groups'] as List).cast<Map<String, dynamic>>();
+      return [
+        for (final g in groups)
+          DuplicateGroup(
+            checksum: g['checksum'] as String,
+            size: (g['size'] as num).toInt(),
+            wastedBytes: (g['wastedBytes'] as num).toInt(),
+            files: ((g['files'] as List).cast<Map<String, dynamic>>())
+                .map((m) => DuplicateFile(
+                      id: m['id'] as String,
+                      parentId: m['parentId'] as String,
+                      name: m['name'] as String,
+                      modifiedAt:
+                          DateTime.parse(m['modifiedAt'] as String),
+                    ))
+                .toList(),
+          )
+      ];
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<void> downloadArchiveToFile(
+    String folderId,
+    String destPath, {
+    void Function(int received, int? total)? onProgress,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      final response = await _dio.get<ResponseBody>(
+        '/files/$folderId/archive',
+        options: Options(responseType: ResponseType.stream),
+        cancelToken: cancelToken,
+      );
+      final file = File(destPath);
+      final sink = file.openWrite();
+      var received = 0;
+      final total =
+          int.tryParse(response.headers.value('content-length') ?? '');
+      await for (final chunk in response.data!.stream) {
+        if (cancelToken?.isCancelled == true) break;
+        sink.add(chunk);
+        received += chunk.length;
+        onProgress?.call(received, total);
+      }
+      await sink.flush();
+      await sink.close();
+    } on DioException catch (e) {
+      if (e.type == DioExceptionType.cancel) rethrow;
       throw LocalVaultApi.mapError(e);
     }
   }
@@ -266,6 +433,28 @@ class FileService {
     try {
       final response = await _dio.post('/shares', data: {
         'fileId': fileId,
+        if (expiresInHours != null) 'expiresInHours': expiresInHours,
+        if (password != null && password.isNotEmpty) 'password': password,
+      });
+      final data = LocalVaultApi.decodeData(response);
+      return (
+        token: data['token'] as String,
+        link: _parseShare(data['item'] as Map<String, dynamic>),
+      );
+    } on DioException catch (e) {
+      throw LocalVaultApi.mapError(e);
+    }
+  }
+
+  Future<({String token, SharedLink link})> createUploadRequest({
+    required String targetFolderId,
+    double? expiresInHours,
+    String? password,
+  }) async {
+    try {
+      final response = await _dio.post('/shares', data: {
+        'mode': 'upload',
+        'targetFolderId': targetFolderId,
         if (expiresInHours != null) 'expiresInHours': expiresInHours,
         if (password != null && password.isNotEmpty) 'password': password,
       });
@@ -614,6 +803,10 @@ class FileService {
         lastOpenedAt: m['lastOpenedAt'] == null
             ? null
             : DateTime.parse(m['lastOpenedAt'] as String),
+        tags: (m['tags'] as List?)
+                ?.map((t) => t.toString())
+                .toList() ??
+            const [],
       );
 
   static FileVersion _parseVersion(Map<String, dynamic> m) => FileVersion(
@@ -647,6 +840,15 @@ class FileService {
             : DateTime.parse(m['expiresAt'] as String),
         createdAt: DateTime.parse(m['createdAt'] as String),
         downloadCount: (m['downloadCount'] as num?)?.toInt() ?? 0,
+        mode: m['mode'] as String? ?? 'download',
+      );
+
+  static FileComment _parseComment(Map<String, dynamic> m) => FileComment(
+        id: m['id'] as String,
+        fileId: m['fileId'] as String,
+        author: m['author'] as String? ?? 'owner',
+        body: m['body'] as String,
+        createdAt: DateTime.parse(m['createdAt'] as String),
       );
 
   static Device _parseDevice(Map<String, dynamic> m) => Device(

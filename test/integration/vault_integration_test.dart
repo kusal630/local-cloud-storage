@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:localvault/data/datasources/vault.dart';
 import 'package:localvault/server/host_runner.dart';
 import 'package:localvault/server/server.dart';
+import 'package:localvault/server/services/token_service.dart';
+import 'package:uuid/uuid.dart';
 
 void main() {
   test('Vault creation and basic operations', () async {
@@ -123,6 +125,156 @@ void main() {
     }
   });
 
+  test('Research wave: tags, comments, shares, duplicates, archive', () async {
+    final storageDir = Directory(
+        '${Directory.systemTemp.path}/lv_research_${DateTime.now().millisecondsSinceEpoch}');
+    await storageDir.create(recursive: true);
+
+    try {
+      final vault = await Vault.create(storageDir);
+      await vault.completeSetup(password: 'testpass', deviceName: 'Test');
+
+      // Tags.
+      final folder = vault.files.createFolder('root', 'Work');
+      final tagged = vault.files.setTags(folder.id, ['Work', 'URGENT!!', 'a']);
+      expect(tagged.tags, ['work', 'a']);
+      final tags = vault.files.listTags();
+      expect(tags.any((t) => t.tag == 'work' && t.count == 1), isTrue);
+      expect(vault.files.listByTag('work').length, 1);
+
+      // Comments.
+      final comment = vault.comments.add(
+        fileId: folder.id,
+        author: 'tester',
+        body: 'hello',
+      );
+      expect(comment.body, 'hello');
+      expect(vault.comments.listForFile(folder.id).length, 1);
+      vault.comments.delete(comment.id);
+      expect(vault.comments.listForFile(folder.id), isEmpty);
+
+      // Download share round-trip (repo level).
+      final created = await vault.shares.create(
+        fileId: folder.id,
+        fileName: folder.name,
+      );
+      expect(created.token.length, 64);
+      final row = vault.shares.resolve(created.token);
+      expect(row['file_id'], folder.id);
+
+      // Upload-request share round-trip.
+      final req = await vault.shares.create(
+        fileName: 'Upload to Work',
+        mode: 'upload',
+        targetFolderId: folder.id,
+      );
+      final reqRow = vault.shares.resolve(req.token);
+      expect(reqRow['mode'], 'upload');
+      expect(reqRow['target_folder_id'], folder.id);
+
+      // Duplicates: same bytes twice → one group.
+      final src = File('${storageDir.path}/dup.txt');
+      await src.writeAsString('same-bytes');
+      const checksum =
+          'b1b1bd16835d3cedfa8a876a3f7d3c4b9f3e0b8b0b0b0b0b0b0b0b0b0b0b0b0';
+      final blob = await vault.storeBlob(
+        sourcePath: src.path,
+        size: await src.length(),
+        checksum: checksum,
+        mimeType: 'text/plain',
+      );
+      vault.files.createFile(
+        parentId: 'root',
+        name: 'a.txt',
+        size: 10,
+        checksum: checksum,
+        blobId: blob.id,
+      );
+      final src2 = File('${storageDir.path}/dup2.txt');
+      await src2.writeAsString('same-bytes');
+      final blob2 = await vault.storeBlob(
+        sourcePath: src2.path,
+        size: await src2.length(),
+        checksum: checksum,
+        mimeType: 'text/plain',
+      );
+      vault.files.createFile(
+        parentId: 'root',
+        name: 'b.txt',
+        size: 10,
+        checksum: checksum,
+        blobId: blob2.id,
+      );
+      final dups = vault.files.duplicates();
+      expect(dups.length, 1);
+      expect(dups.first.files.length, 2);
+
+      vault.close();
+    } finally {
+      await storageDir.delete(recursive: true);
+    }
+  });
+
+  test('Research wave: folder archive over HTTP', () async {
+    final storageDir = Directory(
+        '${Directory.systemTemp.path}/lv_zip_${DateTime.now().millisecondsSinceEpoch}');
+    await storageDir.create(recursive: true);
+    LocalVaultServer? server;
+    try {
+      final vault = await Vault.create(storageDir);
+      await vault.completeSetup(password: 'testpass', deviceName: 'Test');
+      final folder = vault.files.createFolder('root', 'Pack');
+      final src = File('${storageDir.path}/z.txt');
+      await src.writeAsString('zip-me');
+      final blob = await vault.storeBlob(
+        sourcePath: src.path,
+        size: await src.length(),
+        checksum:
+            'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+        mimeType: 'text/plain',
+      );
+      vault.files.createFile(
+        parentId: folder.id,
+        name: 'z.txt',
+        size: 6,
+        checksum:
+            'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+        blobId: blob.id,
+      );
+
+      server = LocalVaultServer(vault: vault);
+      final port = await server.start();
+      final tokens = TokenService(vault);
+      final device = tokens.createDevice(
+        deviceId: const Uuid().v4(),
+        deviceName: 'zip-test',
+      );
+
+      final client = HttpClient();
+      final request = await client.getUrl(Uri.parse(
+          'http://127.0.0.1:$port/api/v1/files/${folder.id}/archive'));
+      request.headers.set('authorization', 'Bearer ${device.accessToken}');
+      final response = await request.close();
+      expect(response.statusCode, 200);
+      expect(response.headers.contentType?.mimeType, 'application/zip');
+      final bytes = await response.fold<List<int>>(
+          [], (all, chunk) => all..addAll(chunk));
+      // ZIP local file header magic.
+      expect(bytes.length, greaterThan(4));
+      expect(bytes[0], 0x50);
+      expect(bytes[1], 0x4B);
+      client.close();
+      await server.stop();
+      server = null;
+      vault.close();
+    } finally {
+      try {
+        await server?.stop();
+      } catch (_) {}
+      await storageDir.delete(recursive: true);
+    }
+  });
+
   test('HostRunner serves HTTPS on a background isolate', () async {
     final storageDir = Directory(
         '${Directory.systemTemp.path}/lv_runner_${DateTime.now().millisecondsSinceEpoch}');
@@ -169,8 +321,7 @@ void main() {
     }
   });
 
-  test('Wave2: favorites, recent, versions, audit, settings, breakdown',
-      () async {
+  test('Wave2: favorites, recent, versions, audit, settings, breakdown',      () async {
     final storageDir = Directory(
         '${Directory.systemTemp.path}/lv_wave2_${DateTime.now().millisecondsSinceEpoch}');
     await storageDir.create(recursive: true);

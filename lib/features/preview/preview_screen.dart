@@ -1,11 +1,15 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'dart:async';
+import 'package:image/image.dart' as img;
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/file_service.dart';
+import 'package:localvault/data/models/audit_entry.dart';
+import 'package:localvault/data/models/file_comment.dart';
 import 'package:localvault/data/models/file_version.dart';
 import 'package:localvault/data/models/vault_file.dart';
 import 'package:localvault/widgets/common.dart';
@@ -110,7 +114,7 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
         ],
       ),
       body: isImage
-          ? _PreviewImage(fileId: file.id)
+          ? _PreviewImage(file: file)
           : _PreviewMetadata(file: file),
     );
   }
@@ -173,8 +177,8 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
 }
 
 class _PreviewImage extends ConsumerStatefulWidget {
-  final String fileId;
-  const _PreviewImage({required this.fileId});
+  final VaultFile file;
+  const _PreviewImage({required this.file});
   @override
   ConsumerState<_PreviewImage> createState() => _PreviewImageState();
 }
@@ -182,6 +186,7 @@ class _PreviewImage extends ConsumerStatefulWidget {
 class _PreviewImageState extends ConsumerState<_PreviewImage> {
   Uint8List? _bytes;
   String? _error;
+  String? _dims;
 
   @override
   void initState() {
@@ -191,14 +196,25 @@ class _PreviewImageState extends ConsumerState<_PreviewImage> {
 
   Future<void> _load() async {
     try {
-      final b = await ref.read(fileServiceProvider).thumbBytes(widget.fileId);
+      final b = await ref.read(fileServiceProvider).thumbBytes(widget.file.id);
+      if (!mounted) return;
       setState(() => _bytes = Uint8List.fromList(b));
+      final dims = await compute(_imageDims, b);
+      if (!mounted) return;
+      setState(() => _dims = dims);
     } catch (_) {
+      if (!mounted) return;
       try {
-        final b =
-            await ref.read(fileServiceProvider).downloadBytes(widget.fileId);
+        final b = await ref
+            .read(fileServiceProvider)
+            .downloadBytes(widget.file.id);
+        if (!mounted) return;
         setState(() => _bytes = Uint8List.fromList(b));
+        final dims = await compute(_imageDims, b);
+        if (!mounted) return;
+        setState(() => _dims = dims);
       } catch (e) {
+        if (!mounted) return;
         setState(() => _error = e.toString());
       }
     }
@@ -207,14 +223,44 @@ class _PreviewImageState extends ConsumerState<_PreviewImage> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return ErrorState(message: 'Could not load image.', onRetry: _load);
+      return ErrorState(message: 'Could not load image.', onRetry: () {
+        setState(() {
+          _error = null;
+          _bytes = null;
+        });
+        _load();
+      });
     }
     if (_bytes == null) {
       return const LoadingIndicator();
     }
-    return InteractiveViewer(
-      child: Center(child: Image.memory(_bytes!, fit: BoxFit.contain)),
+    return Column(
+      children: [
+        if (_dims != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: StatusPill(
+                label: '$_dims • ${formatBytes(widget.file.size)}',
+                color: const Color(0xFF0E7C7B)),
+          ),
+        Expanded(
+          child: InteractiveViewer(
+            child:
+                Center(child: Image.memory(_bytes!, fit: BoxFit.contain)),
+          ),
+        ),
+      ],
     );
+  }
+}
+
+String? _imageDims(List<int> bytes) {
+  try {
+    final decoded = img.decodeImage(Uint8List.fromList(bytes));
+    if (decoded == null) return null;
+    return '${decoded.width}×${decoded.height}';
+  } catch (_) {
+    return null;
   }
 }
 
@@ -336,8 +382,7 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
         ),
         if (!file.isFolder) ...[
           const SizedBox(height: 16),
-          const SectionHeader(title: 'VERSION HISTORY'),
-          if (_versions == null)
+          const SectionHeader(title: 'VERSION HISTORY'),          if (_versions == null)
             const LoadingIndicator()
           else if (_versions!.isEmpty)
             const EmptyState(
@@ -366,6 +411,10 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
               ),
             ),
         ],
+        const SizedBox(height: 16),
+        _CommentsCard(file: file),
+        const SizedBox(height: 16),
+        _FileActivityCard(fileId: file.id),
       ],
     );
   }
@@ -376,6 +425,195 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
         title: Text(label),
         subtitle: Text(value),
       );
+}
+
+/// Comments on a file (Nextcloud-style details activity).
+class _CommentsCard extends ConsumerStatefulWidget {
+  final VaultFile file;
+  const _CommentsCard({required this.file});
+  @override
+  ConsumerState<_CommentsCard> createState() => _CommentsCardState();
+}
+
+class _CommentsCardState extends ConsumerState<_CommentsCard> {
+  List<FileComment>? _comments;
+  final _controller = TextEditingController();
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final comments = await ref
+          .read(fileServiceProvider)
+          .listComments(widget.file.id);
+      if (!mounted) return;
+      setState(() => _comments = comments);
+    } catch (_) {}
+  }
+
+  Future<void> _send() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _sending) return;
+    setState(() => _sending = true);
+    try {
+      await ref
+          .read(fileServiceProvider)
+          .addComment(widget.file.id, text);
+      _controller.clear();
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Comment failed: $e')));
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Future<void> _delete(FileComment c) async {
+    try {
+      await ref
+          .read(fileServiceProvider)
+          .deleteComment(widget.file.id, c.id);
+      _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SectionHeader(
+                title:
+                    'COMMENTS${_comments == null ? '' : ' (${_comments!.length})'}'),
+            if (_comments == null)
+              const LoadingIndicator()
+            else if (_comments!.isEmpty)
+              Text('No comments yet — start the discussion.',
+                  style: Theme.of(context).textTheme.bodySmall)
+            else
+              for (final c in _comments!)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.comment_rounded, size: 20),
+                  title: Text(c.body),
+                  subtitle: Text(
+                      '${c.author} • ${formatDateTime(c.createdAt)}'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                    onPressed: () => _delete(c),
+                  ),
+                ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    decoration: const InputDecoration(
+                        hintText: 'Add a comment…'),
+                    onSubmitted: (_) => _send(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  icon: _sending
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.send_rounded),
+                  onPressed: _send,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Per-file activity from the host audit log.
+class _FileActivityCard extends ConsumerStatefulWidget {
+  final String fileId;
+  const _FileActivityCard({required this.fileId});
+  @override
+  ConsumerState<_FileActivityCard> createState() =>
+      _FileActivityCardState();
+}
+
+class _FileActivityCardState
+    extends ConsumerState<_FileActivityCard> {
+  List<AuditEntry>? _entries;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final entries = await ref
+          .read(fileServiceProvider)
+          .activityFor(widget.fileId, limit: 20);
+      if (!mounted) return;
+      setState(() => _entries = entries);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_entries == null || _entries!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionHeader(title: 'ACTIVITY'),
+            for (final e in _entries!)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading:
+                    const Icon(Icons.timeline_rounded, size: 20),
+                title: Text(e.action,
+                    style: Theme.of(context).textTheme.bodyMedium),
+                subtitle: Text(
+                    '${e.targetName ?? ''} • ${formatDateTime(e.createdAt)}'
+                        .trim(),
+                    style: Theme.of(context).textTheme.bodySmall),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 /// Capped plain-text preview for code/logs/notes (first ~128 KB).

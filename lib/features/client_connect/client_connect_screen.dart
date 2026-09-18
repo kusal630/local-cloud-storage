@@ -30,6 +30,7 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
   bool _obscurePass = true;
   DiscoveryListener? _discovery;
   List<DiscoveredNode> _nearby = [];
+  Set<String> _knownNodes = {};
 
   @override
   void dispose() {
@@ -206,9 +207,26 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
     }
     if (!mounted) return;
     setState(() => _discovery = listener);
-    listener.nodes.listen((nodes) {
+    listener.nodes.listen((nodes) async {
       if (!mounted) return;
-      setState(() => _nearby = nodes);
+      // Mark beacons whose certificate we already pinned as known.
+      final known = <String>{};
+      try {
+        final store = ref.read(sessionStoreProvider);
+        for (final n in nodes) {
+          if (n.fingerprint.isEmpty) continue;
+          final pin = await store.getCertPin(n.host) ??
+              await store.getCertPin('${n.host}:${n.port}');
+          if (pin != null && pin.isNotEmpty && pin == n.fingerprint) {
+            known.add('${n.host}:${n.port}');
+          }
+        }
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() {
+        _nearby = nodes;
+        _knownNodes = known;
+      });
     });
   }
 
@@ -310,7 +328,16 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
                     ListTile(
                       leading: VaultFileIcon(
                           name: 'node', isFolder: false, size: 36),
-                      title: Text(node.deviceName),
+                      title: Row(
+                        children: [
+                          Expanded(child: Text(node.deviceName)),
+                          if (_knownNodes
+                              .contains('${node.host}:${node.port}'))
+                            const StatusPill(
+                                label: 'KNOWN',
+                                color: Color(0xFF43A047)),
+                        ],
+                      ),
                       subtitle: Text(
                           '${node.url}${node.secure ? ' • HTTPS' : ''}'),
                       trailing: const Icon(Icons.chevron_right_rounded),

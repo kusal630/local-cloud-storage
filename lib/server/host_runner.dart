@@ -124,6 +124,7 @@ class HostRunner {
         deviceName: vault.settings.hostDeviceName,
         port: node.port,
         secure: node.secure,
+        fingerprint: node.fingerprint ?? '',
       );
       await node._beacon!.start();
     } catch (e) {

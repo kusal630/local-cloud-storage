@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:archive/archive_io.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_multipart/shelf_multipart.dart';
 import 'package:shelf_router/shelf_router.dart';
@@ -13,16 +14,22 @@ import '../../core/errors/app_exceptions.dart';
 import '../../core/logging/app_logger.dart';
 import '../../core/utils/cipher.dart';
 import '../../core/utils/file_names.dart';
+import '../../core/utils/path_guard.dart';
 import '../../data/datasources/vault.dart';
 import '../../data/models/audit_entry.dart';
 import '../../data/models/device.dart';
+import '../../data/models/file_comment.dart';
 import '../../data/models/file_version.dart';
 import '../../data/models/shared_link.dart';
 import '../../data/models/vault_file.dart';
+import '../../data/repositories/file_repository.dart';
 import '../middleware/api_responses.dart';
 import '../middleware/auth_middleware.dart';
 import '../services/pairing_service.dart';
 import '../services/token_service.dart';
+
+/// Set when the API handler is built (isolate boot) — basis for uptime.
+final DateTime _bootTime = DateTime.now();
 
 /// JSON serialization helpers for API models.
 Map<String, Object?> fileToJson(VaultFile f) => {
@@ -39,6 +46,7 @@ Map<String, Object?> fileToJson(VaultFile f) => {
       'hasThumb': f.hasThumb,
       'isFavorite': f.isFavorite,
       'lastOpenedAt': f.lastOpenedAt?.toIso8601String(),
+      'tags': f.tags,
     };
 
 Map<String, Object?> versionToJson(FileVersion v) => {
@@ -70,6 +78,15 @@ Map<String, Object?> shareToJson(SharedLink s) => {
       'expiresAt': s.expiresAt?.toIso8601String(),
       'createdAt': s.createdAt.toIso8601String(),
       'downloadCount': s.downloadCount,
+      'mode': s.mode,
+    };
+
+Map<String, Object?> commentToJson(FileComment c) => {
+      'id': c.id,
+      'fileId': c.fileId,
+      'author': c.author,
+      'body': c.body,
+      'createdAt': c.createdAt.toIso8601String(),
     };
 
 Map<String, Object?> deviceToJson(Device d) => {
@@ -130,6 +147,9 @@ class ApiHandlers {
       'version': AppConstants.appVersion,
       'serverTime': DateTime.now().toUtc().toIso8601String(),
       'setupComplete': vault.isSetup,
+      'uptimeSeconds':
+          DateTime.now().difference(_bootTime).inSeconds,
+      'dataVersion': vault.settings.dataVersion,
     });
   }
 
@@ -717,6 +737,226 @@ class ApiHandlers {
     return ApiResponses.ok({'version': vault.settings.dataVersion});
   }
 
+  // ---------------------------------------------------------------------------
+  // Tags
+  // ---------------------------------------------------------------------------
+
+  Future<Response> updateTags(Request request, String id) async {
+    final device = _device(request);
+    final body = await _jsonBody(request);
+    final raw = body['tags'];
+    final List<String> tags;
+    if (raw is List) {
+      tags = FileRepository.parseTags(raw.join(','));
+    } else {
+      tags = FileRepository.parseTags(raw?.toString());
+    }
+    final entry = vault.files.setTags(id, tags);
+    vault.mutated(
+      deviceId: device.id,
+      action: 'file.tag',
+      targetId: id,
+      targetName: entry.name,
+      detail: tags.join(','),
+    );
+    return ApiResponses.ok({'item': fileToJson(entry)});
+  }
+
+  Future<Response> listTags(Request request) async {
+    final tags = vault.files.listTags();
+    return ApiResponses.ok({
+      'items': [
+        for (final t in tags) {'tag': t.tag, 'count': t.count}
+      ],
+    });
+  }
+
+  Future<Response> listByTag(Request request) async {
+    final tag = request.url.queryParameters['tag']?.trim() ?? '';
+    if (tag.isEmpty) return ApiResponses.ok({'items': const []});
+    final items = vault.files.listByTag(tag);
+    return ApiResponses.ok({
+      'tag': tag,
+      'items': items.map(fileToJson).toList(),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Comments
+  // ---------------------------------------------------------------------------
+
+  Future<Response> listComments(Request request, String id) async {
+    vault.files.getById(id);
+    final items = vault.comments.listForFile(id);
+    return ApiResponses.ok({'items': items.map(commentToJson).toList()});
+  }
+
+  Future<Response> addComment(Request request, String id) async {
+    final device = _device(request);
+    final entry = vault.files.getById(id);
+    if (entry.isTrashed) {
+      throw const ValidationException('Trashed items cannot be commented on.');
+    }
+    final body = await _jsonBody(request);
+    final comment = vault.comments.add(
+      fileId: id,
+      deviceId: device.id,
+      author: device.name,
+      body: body['body']?.toString() ?? '',
+    );
+    vault.mutated(
+      deviceId: device.id,
+      action: 'file.comment',
+      targetId: id,
+      targetName: entry.name,
+    );
+    return ApiResponses.created({'item': commentToJson(comment)});
+  }
+
+  Future<Response> deleteComment(
+      Request request, String id, String commentId) async {
+    vault.files.getById(id);
+    vault.comments.delete(commentId);
+    return ApiResponses.ok();
+  }
+
+  Future<Response> activityFor(Request request) async {
+    final target = request.url.queryParameters['target'];
+    final limit =
+        int.tryParse(request.url.queryParameters['limit'] ?? '50') ?? 50;
+    final items = vault.audit.recent(limit: 200);
+    final filtered = target == null || target.isEmpty
+        ? items
+        : items.where((a) => a.targetId == target).toList();
+    return ApiResponses.ok({
+      'items': filtered.take(limit).map(auditToJson).toList(),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Duplicates + folder archive
+  // ---------------------------------------------------------------------------
+
+  Future<Response> listDuplicates(Request request) async {
+    final groups = vault.files.duplicates();
+    return ApiResponses.ok({
+      'groups': [
+        for (final g in groups)
+          {
+            'checksum': g.checksum,
+            'size': g.size,
+            'wastedBytes': g.size * (g.files.length - 1),
+            'files': [
+              for (final f in g.files)
+                {
+                  'id': f.id,
+                  'parentId': f.parentId,
+                  'name': f.name,
+                  'modifiedAt': f.modifiedAt.toIso8601String(),
+                }
+            ],
+          }
+      ],
+    });
+  }
+
+  Future<Response> downloadArchive(Request request, String id) async {
+    final device = _device(request);
+    final folder = vault.files.getById(id);
+    if (folder.isTrashed || !folder.isFolder) {
+      throw const ValidationException('Only live folders can be archived.');
+    }
+    final rows = vault.database.raw.select(
+      '''
+      WITH RECURSIVE subtree(id) AS (
+        SELECT id FROM files WHERE id = ?
+        UNION ALL
+        SELECT f.id FROM files f JOIN subtree s ON f.parent_id = s.id
+      )
+      SELECT f.id, f.parent_id, f.name, f.size, b.rel_path
+      FROM files f LEFT JOIN blobs b ON b.id = f.blob_id
+      WHERE f.id IN (SELECT id FROM subtree)
+        AND f.deleted_at IS NULL AND f.type = 'file' AND f.id != ?
+      ''',
+      [id, AppConstants.rootFolderId],
+    );
+    const maxFiles = 2000;
+    const maxBytes = 2 * 1024 * 1024 * 1024;
+    var total = 0;
+    for (final row in rows) {
+      total += ((row['size'] as int?) ?? 0);
+    }
+    if (rows.length > maxFiles || total > maxBytes) {
+      return ApiResponses.validation(
+          'Folder too large to archive (max $maxFiles files / 2 GB).');
+    }
+    // Build vault-relative paths by walking parents.
+    final all = vault.database.raw.select(
+      'SELECT id, parent_id, name FROM files WHERE deleted_at IS NULL',
+    );
+    final parentOf = {
+      for (final r in all) (r['id'] as String): (r['parent_id'] as String?)
+    };
+    final nameOf = {
+      for (final r in all) (r['id'] as String): (r['name'] as String?)
+    };
+    String relPath(String fileId, String name) {
+      final parts = [name];
+      var current = parentOf[fileId];
+      var guard = 0;
+      while (current != null &&
+          current != id &&
+          current != AppConstants.rootFolderId &&
+          guard < 64) {
+        parts.insert(0, nameOf[current] ?? 'folder');
+        current = parentOf[current];
+        guard++;
+      }
+      return parts.join('/');
+    }
+
+    final zipPath =
+        '${Directory.systemTemp.path}${Platform.pathSeparator}lv_zip_${const Uuid().v4()}.zip';
+    final encoder = ZipFileEncoder();
+    encoder.open(zipPath);
+    final seen = <String>{};
+    for (final row in rows) {
+      final rel = row['rel_path'] as String?;
+      if (rel == null) continue;
+      var entryName =
+          relPath(row['id'] as String, row['name'] as String);
+      if (seen.contains(entryName)) {
+        entryName = '${const Uuid().v4()}_$entryName';
+      }
+      seen.add(entryName);
+      final diskFile =
+          File(PathGuard.resolveInside(vault.vaultDir, rel));
+      if (!await diskFile.exists()) continue;
+      await encoder.addFile(diskFile, entryName);
+    }
+    encoder.close();
+    final zipFile = File(zipPath);
+    final length = await zipFile.length();
+    vault.mutated(
+      deviceId: device.id,
+      action: 'folder.archive',
+      targetId: id,
+      targetName: folder.name,
+    );
+    // Best-effort temp cleanup after serving.
+    unawaited(Future.delayed(const Duration(minutes: 10), () async {
+      try {
+        if (await zipFile.exists()) await zipFile.delete();
+      } catch (_) {}
+    }));
+    return Response.ok(zipFile.openRead(), headers: {
+      'content-type': 'application/zip',
+      'content-length': '$length',
+      'content-disposition':
+          'attachment; filename="${_escape(folder.name)}.zip"',
+    });
+  }
+
   Future<Response> purgeExpiredTrash(Request request) async {
     final device = _device(request);
     final orphans = await _purgeExpired();
@@ -853,14 +1093,7 @@ class ApiHandlers {
   Future<Response> createShare(Request request) async {
     final device = _device(request);
     final body = await _jsonBody(request);
-    final fileId = body['fileId']?.toString() ?? '';
-    final file = vault.files.getById(fileId);
-    if (file.isTrashed) {
-      throw const ValidationException('Trashed items cannot be shared.');
-    }
-    if (file.isFolder) {
-      return ApiResponses.validation('Only files can be shared for now.');
-    }
+    final mode = body['mode']?.toString() ?? 'download';
     final hours = (body['expiresInHours'] as num?)?.toDouble();
     if (hours != null && (hours <= 0 || hours > 24 * 365)) {
       return ApiResponses.validation('expiresInHours must be 0..8760.');
@@ -870,10 +1103,47 @@ class ApiHandlers {
       return ApiResponses.validation(
           'Share password must be at least 4 characters.');
     }
+    final expiresIn = hours == null
+        ? null
+        : Duration(minutes: (hours * 60).round());
+
+    if (mode == 'upload') {
+      // File-request link targeting a folder.
+      final folderId =
+          body['targetFolderId']?.toString() ?? AppConstants.rootFolderId;
+      vault.files.requireFolder(folderId);
+      final folder = vault.files.getById(folderId);
+      final created = await vault.shares.create(
+        fileName: 'Upload to ${folder.name}',
+        mode: 'upload',
+        targetFolderId: folderId,
+        expiresIn: expiresIn,
+        password: password.isEmpty ? null : password,
+      );
+      vault.mutated(
+        deviceId: device.id,
+        action: 'share.request.create',
+        targetId: folderId,
+        targetName: folder.name,
+      );
+      return ApiResponses.created({
+        'token': created.token,
+        'item': shareToJson(created.link),
+      });
+    }
+
+    final fileId = body['fileId']?.toString() ?? '';
+    final file = vault.files.getById(fileId);
+    if (file.isTrashed) {
+      throw const ValidationException('Trashed items cannot be shared.');
+    }
+    if (file.isFolder) {
+      return ApiResponses.validation('Only files can be shared for now.');
+    }
     final created = await vault.shares.create(
       fileId: file.id,
       fileName: file.name,
-      expiresIn: hours == null ? null : Duration(minutes: (hours * 60).round()),
+      expiresIn: expiresIn,
       password: password.isEmpty ? null : password,
     );
     vault.mutated(
@@ -920,24 +1190,42 @@ class ApiHandlers {
     } catch (_) {
       throw const NotFoundException('Share not found or expired.');
     }
+    final locked = (row['password_hash'] as String?) != null;
+    final expiresAt = row['expires_at'] as int?;
+    final expiresIso = expiresAt == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(expiresAt).toIso8601String();
+    if ((row['mode'] as String? ?? 'download') == 'upload') {
+      final folder =
+          vault.files.getById(row['target_folder_id'] as String? ?? '');
+      if (locked) {
+        return ApiResponses.ok({
+          'mode': 'upload',
+          'hasPassword': true,
+          'expiresAt': expiresIso,
+        });
+      }
+      return ApiResponses.ok({
+        'mode': 'upload',
+        'hasPassword': false,
+        'folderName': folder.name,
+        'expiresAt': expiresIso,
+      });
+    }
     final file = vault.files.getById(row['file_id'] as String);
     if (file.isTrashed || file.isFolder || file.blobId == null) {
       throw const NotFoundException('Shared file is unavailable.');
     }
-    final locked = (row['password_hash'] as String?) != null;
     if (locked) {
       return ApiResponses.unauthorized('Password required.');
     }
-    final expiresAt = row['expires_at'] as int?;
     return ApiResponses.ok({
+      'mode': 'download',
       'name': file.name,
       'size': file.size,
       'mime': file.mime,
       'hasPassword': false,
-      'expiresAt': expiresAt == null
-          ? null
-          : DateTime.fromMillisecondsSinceEpoch(expiresAt)
-              .toIso8601String(),
+      'expiresAt': expiresIso,
     });
   }
 
@@ -962,8 +1250,7 @@ class ApiHandlers {
   }
 
   /// Public content download (Range-capable). Ticket required iff locked.
-  Future<Response> shareContent(Request request, String token) async {
-    late final dynamic row;
+  Future<Response> shareContent(Request request, String token) async {    late final dynamic row;
     try {
       row = vault.shares.resolve(token);
     } catch (_) {
@@ -977,6 +1264,9 @@ class ApiHandlers {
           grant.fileId != (row['file_id'] as String)) {
         return ApiResponses.unauthorized('Valid ticket required.');
       }
+    }
+    if ((row['mode'] as String? ?? 'download') != 'download') {
+      return ApiResponses.validation('This link accepts uploads, not downloads.');
     }
     final file = vault.files.getById(row['file_id'] as String);
     if (file.isTrashed || file.isFolder || file.blobId == null) {
@@ -996,6 +1286,81 @@ class ApiHandlers {
     final length = await diskFile.length();
     return _rangedResponse(
         diskFile, length, file.mime, file.name, request.headers['range']);
+  }
+
+  /// Public upload into a file-request (upload-mode) share.
+  ///
+  /// Multipart with a single `file` part. Ticket required iff locked
+  /// (pass `?ticket=`). Counts against the vault quota.
+  Future<Response> shareUpload(Request request, String token) async {
+    late final dynamic row;
+    try {
+      row = vault.shares.resolve(token);
+    } catch (_) {
+      throw const NotFoundException('Share not found or expired.');
+    }
+    if ((row['mode'] as String? ?? 'download') != 'upload') {
+      return ApiResponses.validation('This link is download-only.');
+    }
+    if ((row['password_hash'] as String?) != null) {
+      final ticket = request.url.queryParameters['ticket'] ?? '';
+      final grant = _shareTickets[ticket];
+      if (grant == null ||
+          grant.expiresAt.isBefore(DateTime.now()) ||
+          grant.fileId != '') {
+        return ApiResponses.unauthorized('Valid ticket required.');
+      }
+    }
+    final folderId = row['target_folder_id'] as String? ?? '';
+    vault.files.requireFolder(folderId);
+
+    final form = FormDataRequest.of(request);
+    if (form == null) {
+      return ApiResponses.validation('Expected multipart/form-data body.');
+    }
+    String? filename;
+    Uint8List? bytes;
+    await for (final data in form.formData) {
+      if (data.name == 'file') {
+        filename = data.filename;
+        bytes = await data.part.readBytes();
+      }
+    }
+    if (bytes == null || bytes.isEmpty) {
+      return ApiResponses.validation('Missing file part.');
+    }
+    if (bytes.length > 500 * 1024 * 1024) {
+      return ApiResponses.validation('File exceeds the 500 MB share limit.');
+    }
+    vault.enforceQuota(bytes.length);
+    final safeName = FileNames.sanitize(
+        (filename == null || filename.isEmpty) ? 'shared-file' : filename);
+
+    // Stage to tmp, then store (checksum-verified like normal uploads).
+    final checksum = Cipher.sha256Hex(bytes);
+    final tmp = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}lv_share_${const Uuid().v4()}');
+    await tmp.writeAsBytes(bytes);
+    final blob = await vault.storeBlob(
+      sourcePath: tmp.path,
+      size: bytes.length,
+      checksum: checksum,
+      mimeType: null,
+    );
+    await tmp.delete().catchError((_) => tmp);
+    final file = vault.files.createFile(
+      parentId: folderId,
+      name: safeName,
+      size: bytes.length,
+      checksum: checksum,
+      blobId: blob.id,
+    );
+    vault.mutated(
+      action: 'share.upload',
+      targetId: file.id,
+      targetName: file.name,
+    );
+    return ApiResponses.created({'item': fileToJson(file)});
   }
 
   Future<Response> revokeDevice(Request request, String id) async {    final device = _device(request);
@@ -1109,7 +1474,8 @@ Handler buildApiHandler({
     ..post('/api/v1/pair', handlers.pair)
     ..get('/s/<token>', handlers.shareInfo)
     ..post('/s/<token>/unlock', handlers.shareUnlock)
-    ..get('/s/<token>/content', handlers.shareContent);
+    ..get('/s/<token>/content', handlers.shareContent)
+    ..post('/s/<token>/upload', handlers.shareUpload);
 
   final protectedRouter = Router()
     ..post('/api/v1/auth/logout', handlers.logout)
@@ -1123,11 +1489,19 @@ Handler buildApiHandler({
     ..post('/api/v1/files/upload/complete', handlers.uploadComplete)
     ..post('/api/v1/files/upload/status', handlers.uploadStatus)
     ..get('/api/v1/files/<id>/content', handlers.download)
+    ..get('/api/v1/files/<id>/archive', handlers.downloadArchive)
     ..get('/api/v1/files/<id>/thumb', handlers.thumb)
     ..post('/api/v1/files/<id>/open', handlers.touchOpen)
     ..get('/api/v1/files/<id>/versions', handlers.listVersions)
     ..post('/api/v1/files/<id>/versions/<version>/restore',
         handlers.restoreVersion)
+    ..get('/api/v1/files/<id>/comments', handlers.listComments)
+    ..post('/api/v1/files/<id>/comments', handlers.addComment)
+    ..delete(
+        '/api/v1/files/<id>/comments/<commentId>', handlers.deleteComment)
+    ..patch('/api/v1/files/<id>/tags', handlers.updateTags)
+    ..get('/api/v1/tags', handlers.listTags)
+    ..get('/api/v1/files/by-tag', handlers.listByTag)
     ..patch('/api/v1/files/<id>', handlers.update)
     ..delete('/api/v1/files/<id>', handlers.delete)
     ..get('/api/v1/search', handlers.search)
@@ -1140,6 +1514,8 @@ Handler buildApiHandler({
     ..get('/api/v1/storage/breakdown', handlers.storageBreakdown)
     ..get('/api/v1/sync/version', handlers.syncVersion)
     ..get('/api/v1/activity', handlers.activity)
+    ..get('/api/v1/activity/for', handlers.activityFor)
+    ..get('/api/v1/storage/duplicates', handlers.listDuplicates)
     ..get('/api/v1/settings', handlers.getSettings)
     ..put('/api/v1/settings', handlers.updateSettings)
     ..get('/api/v1/devices', handlers.devices)

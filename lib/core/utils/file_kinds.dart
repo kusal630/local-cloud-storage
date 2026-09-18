@@ -70,14 +70,41 @@ abstract class FileKinds {
     return null;
   }
 
-  /// Encodes a LAN discovery beacon payload.
+  /// Encodes a LAN discovery beacon payload (v2 when [fingerprint] is set:
+  /// receivers can match known hosts without connecting).
   static String beaconEncode({
     required String deviceName,
     required String host,
     required int port,
     required bool secure,
-  }) =>
-      'localvault-v1|$deviceName|$host|$port|${secure ? 'https' : 'http'}';
+    String fingerprint = '',
+  }) {
+    final scheme = secure ? 'https' : 'http';
+    if (fingerprint.isEmpty) {
+      return 'localvault-v1|$deviceName|$host|$port|$scheme';
+    }
+    return 'localvault-v2|$deviceName|$host|$port|$scheme|$fingerprint';
+  }
+
+  /// Decodes v1 or v2 payloads. Returns null when malformed.
+  static ({String deviceName, String host, int port, bool secure, String fingerprint})?
+      beaconDecodeAny(String raw) {
+    final parts = raw.split('|');
+    if (parts.length < 5) return null;
+    if (parts[0] != 'localvault-v1' && parts[0] != 'localvault-v2') {
+      return null;
+    }
+    final port = int.tryParse(parts[3]);
+    if (port == null || port <= 0 || port > 65535) return null;
+    if (parts[2].isEmpty) return null;
+    return (
+      deviceName: parts[1].isEmpty ? 'Storage Node' : parts[1],
+      host: parts[2],
+      port: port,
+      secure: parts[4] == 'https',
+      fingerprint: parts.length >= 6 ? parts[5].trim() : '',
+    );
+  }
 
   /// Decodes a beacon payload. Returns null when malformed.
   static ({String deviceName, String host, int port, bool secure})?

@@ -28,6 +28,7 @@ class BackupService extends ChangeNotifier {
   static const _lastRunKey = 'backup_last_run';
   static const _lastAddedKey = 'backup_last_added';
   static const _lastScannedKey = 'backup_last_scanned';
+  static const _ignoresKey = 'backup_ignore_patterns';
 
   /// Files larger than this are skipped (500 MB).
   static const int maxFileBytes = 500 * 1024 * 1024;
@@ -40,6 +41,30 @@ class BackupService extends ChangeNotifier {
   DateTime? lastRun;
   int lastAdded = 0;
   int lastScanned = 0;
+  /// Syncthing-style ignore substrings (`*` wildcard), comma-separated in UI.
+  List<String> ignorePatterns = [];
+
+  /// Pure helper (unit-tested): true when [path] matches any ignore pattern.
+  /// `*` acts as a wildcard; plain text matches as a substring.
+  /// Matching runs against the full path and the bare file name.
+  static bool matchesIgnore(String path, List<String> patterns) {
+    final targets = [path.toLowerCase(), p.basename(path).toLowerCase()];
+    for (final raw in patterns) {
+      final pattern = raw.trim().toLowerCase();
+      if (pattern.isEmpty) continue;
+      for (final target in targets) {
+        if (pattern.contains('*')) {
+          final regex = RegExp(
+            '^${RegExp.escape(pattern).replaceAll('\\*', '.*')}\$',
+          );
+          if (regex.hasMatch(target)) return true;
+        } else if (target.contains(pattern)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
   /// Pure helper (unit-tested): true when [name]/[size] should be skipped.
   static bool shouldSkip(String name, int size) {
@@ -57,6 +82,11 @@ class BackupService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       enabled = prefs.getBool(_enabledKey) ?? false;
       sources = prefs.getStringList(_sourcesKey) ?? [];
+      ignorePatterns = (prefs.getString(_ignoresKey) ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
       final last = prefs.getString(_lastRunKey);
       lastRun = last == null ? null : DateTime.tryParse(last);
       lastAdded = prefs.getInt(_lastAddedKey) ?? 0;
@@ -85,6 +115,19 @@ class BackupService extends ChangeNotifier {
     sources = sources.where((s) => s != path).toList();
     notifyListeners();
     await _saveSources();
+  }
+
+  Future<void> setIgnorePatterns(String commaSeparated) async {
+    ignorePatterns = commaSeparated
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_ignoresKey, commaSeparated);
+    } catch (_) {}
   }
 
   Future<void> _saveSources() async {
@@ -121,6 +164,7 @@ class BackupService extends ChangeNotifier {
           }
           lastScanned++;
           if (shouldSkip(entity.path, size)) continue;
+          if (matchesIgnore(entity.path, ignorePatterns)) continue;
           String checksum;
           try {
             checksum = await compute(_shaFile, entity.path);

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// in SharedPreferences. No new dependencies (uses `crypto` + prefs).
 class PinStore {
   static const String _hashKey = 'app_pin_hash';
+  static const String _bioKey = 'app_biometric_unlock';
 
   Future<bool> get hasPin async {
     final prefs = await SharedPreferences.getInstance();
@@ -31,5 +32,16 @@ class PinStore {
   Future<void> clear() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_hashKey);
+    await prefs.remove(_bioKey);
+  }
+
+  Future<bool> get biometricEnabled async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_bioKey) ?? false;
+  }
+
+  Future<void> setBiometricEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_bioKey, value);
   }
 }

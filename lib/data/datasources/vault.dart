@@ -15,6 +15,7 @@ import '../database/vault_database.dart';
 import '../models/storage_status.dart';
 import '../models/vault_file.dart';
 import '../repositories/blob_repository.dart';
+import '../repositories/comment_repository.dart';
 import '../repositories/device_repository.dart';
 import '../repositories/file_repository.dart';
 import '../repositories/settings_repository.dart';
@@ -37,6 +38,7 @@ class Vault {
     required this.versions,
     required this.audit,
     required this.shares,
+    required this.comments,
   });
 
   factory Vault.from({
@@ -54,6 +56,7 @@ class Vault {
       versions: VersionRepository(database),
       audit: AuditRepository(database),
       shares: ShareRepository(database),
+      comments: CommentRepository(database),
     );
   }
 
@@ -67,6 +70,7 @@ class Vault {
   final VersionRepository versions;
   final AuditRepository audit;
   final ShareRepository shares;
+  final CommentRepository comments;
 
   Directory get blobsDir =>
       Directory(p.join(vaultDir.path, AppConstants.blobsDirName));

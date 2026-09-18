@@ -100,4 +100,37 @@ void main() {
     expect(LocalVaultApi.fingerprintOfPem(pem),
         sha256.convert([1, 2, 3]).toString());
   });
+
+  test('beacon v2 carries fingerprints, v1 still parses', () {
+    final v2 = FileKinds.beaconEncode(
+      deviceName: 'Node',
+      host: '192.168.1.5',
+      port: 8484,
+      secure: true,
+      fingerprint: 'abc123',
+    );
+    final d2 = FileKinds.beaconDecodeAny(v2);
+    expect(d2, isNotNull);
+    expect(d2!.fingerprint, 'abc123');
+    expect(d2.secure, isTrue);
+    final v1 = FileKinds.beaconEncode(
+      deviceName: 'Old',
+      host: '192.168.1.6',
+      port: 8484,
+      secure: false,
+    );
+    final d1 = FileKinds.beaconDecodeAny(v1);
+    expect(d1, isNotNull);
+    expect(d1!.fingerprint, '');
+  });
+
+  test('backup ignore patterns match paths and names', () {
+    expect(
+        BackupService.matchesIgnore(
+            '/storage/DCIM/Screenshots/a.png', ['screenshots']),
+        isTrue);
+    expect(BackupService.matchesIgnore('/a/b.tmp', ['*.tmp']), isTrue);
+    expect(BackupService.matchesIgnore('/a/photo.jpg', ['*.tmp']), isFalse);
+    expect(BackupService.matchesIgnore('/a/photo.jpg', []), isFalse);
+  });
 }

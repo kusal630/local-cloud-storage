@@ -17,6 +17,7 @@ class VaultFile extends Equatable {
     this.hasThumb = false,
     this.isFavorite = false,
     this.lastOpenedAt,
+    this.tags = const [],
   });
 
   final String id;
@@ -36,6 +37,7 @@ class VaultFile extends Equatable {
   final bool hasThumb;
   final bool isFavorite;
   final DateTime? lastOpenedAt;
+  final List<String> tags;
 
   bool get isFolder => type == 'folder';
 
@@ -57,5 +59,6 @@ class VaultFile extends Equatable {
         hasThumb,
         isFavorite,
         lastOpenedAt,
+        tags,
       ];
 }

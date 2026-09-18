@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:localvault/app/app.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/pin_store.dart';
@@ -15,6 +16,8 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _hasPin = false;
+  bool _bioOn = false;
+  bool _bioSupported = false;
 
   @override
   void initState() {
@@ -23,9 +26,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _refreshPin() async {
-    final has = await PinStore().hasPin;
+    final store = PinStore();
+    final has = await store.hasPin;
+    final bio = await store.biometricEnabled;
+    bool supported = false;
+    try {
+      supported = await LocalAuthentication().isDeviceSupported();
+    } catch (_) {}
     if (!mounted) return;
-    setState(() => _hasPin = has);
+    setState(() {
+      _hasPin = has;
+      _bioOn = bio;
+      _bioSupported = supported;
+    });
+  }
+
+  Future<void> _toggleBio(bool value) async {
+    if (value && !_hasPin) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Set an app PIN first.')),
+      );
+      return;
+    }
+    await PinStore().setBiometricEnabled(value);
+    _refreshPin();
   }
 
   @override
@@ -73,6 +98,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     : 'Protect this app with a PIN',
                 onTap: () => _pinSheet(),
               ),
+              if (_bioSupported)
+                SwitchListTile(
+                  secondary: const Icon(Icons.fingerprint_rounded),
+                  title: const Text('Biometric unlock'),
+                  subtitle: const Text(
+                      'Fingerprint / face instead of PIN'),
+                  value: _bioOn && _hasPin,
+                  onChanged: _toggleBio,
+                ),
             ],
           ),
           const _BackupSection(),
@@ -330,6 +364,22 @@ class _BackupSection extends ConsumerWidget {
               await ref.read(backupServiceProvider).addSource(path);
             }
           },
+        ),
+        Padding(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: TextField(
+            controller: TextEditingController(
+                text: backup.ignorePatterns.join(', ')),
+            decoration: const InputDecoration(
+              labelText: 'Ignore patterns (comma-separated, * = wildcard)',
+              hintText: '*.tmp, Screenshots, thumb',
+              prefixIcon: Icon(Icons.block_rounded),
+            ),
+            onSubmitted: (v) => ref
+                .read(backupServiceProvider)
+                .setIgnorePatterns(v),
+          ),
         ),
         ListTile(
           leading: backup.running

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'dart:async' as async;
+import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
@@ -8,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/transfer_manager.dart';
 import 'package:localvault/data/models/vault_file.dart';
@@ -230,6 +233,10 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         items = await svc.listFavorites();
       } else if (_typeFilter == 'recent') {
         items = await svc.listRecent();
+      } else if (_typeFilter.startsWith('tag:')) {
+        items = await svc.listByTag(_typeFilter.substring(4));
+      } else if (_typeFilter == 'offline') {
+        items = ref.read(offlineServiceProvider).asVaultFiles();
       } else {
         final folder = ref.read(currentFolderProvider);
         items = await svc.listFiles(folder);
@@ -321,10 +328,13 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       }
     });
   }
-
-  List<VaultFile> get _visible {    final q = _query.trim().toLowerCase();
-    // Starred/Recent are server-side collections; only the query applies.
-    if (_typeFilter == 'starred' || _typeFilter == 'recent') {
+  List<VaultFile> get _visible {
+    final q = _query.trim().toLowerCase();
+    // Server-side/global collections; only the query applies.
+    if (_typeFilter == 'starred' ||
+        _typeFilter == 'recent' ||
+        _typeFilter == 'offline' ||
+        _typeFilter.startsWith('tag:')) {
       if (q.isEmpty) return _items;
       return _items
           .where((f) => f.name.toLowerCase().contains(q))
@@ -448,6 +458,17 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                 _toggleFavorite(file);
               },
             ),
+            ListTile(
+              leading: const Icon(Icons.tag_rounded),
+              title: const Text('Tags'),
+              subtitle: file.tags.isEmpty
+                  ? null
+                  : Text(file.tags.map((t) => '#$t').join(' ')),
+              onTap: () {
+                Navigator.pop(ctx);
+                _editTags(file);
+              },
+            ),
             if (!file.isFolder)
               ListTile(
                 leading: const Icon(Icons.download_rounded),
@@ -455,6 +476,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                 onTap: () {
                   Navigator.pop(ctx);
                   _download(file);
+                },
+              ),
+            if (file.isFolder)
+              ListTile(
+                leading: const Icon(Icons.archive_rounded),
+                title: const Text('Download as ZIP'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _downloadFolder(file);
                 },
               ),
             if (!file.isFolder)
@@ -466,6 +496,34 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                   _shareFile(file);
                 },
               ),
+            if (file.isFolder)
+              ListTile(
+                leading: const Icon(Icons.markunread_mailbox_rounded),
+                title: const Text('Request files'),
+                subtitle:
+                    const Text('Link that lets anyone upload here'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _requestFiles(file);
+                },
+              ),
+            if (!file.isFolder)
+              Consumer(builder: (context, ref, _) {
+                final pinned =
+                    ref.watch(offlineServiceProvider).isPinned(file.id);
+                return ListTile(
+                  leading: Icon(pinned
+                      ? Icons.cloud_off_rounded
+                      : Icons.cloud_download_rounded),
+                  title: Text(pinned
+                      ? 'Remove offline copy'
+                      : 'Save offline'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _toggleOffline(file, pinned);
+                  },
+                );
+              }),
             ListTile(
               leading: const Icon(Icons.drive_file_move_rounded),
               title: const Text('Move'),
@@ -619,6 +677,232 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       );
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('Share failed: $e')));
+    }
+  }
+
+  Future<void> _editTags(VaultFile file) async {
+    final controller =
+        TextEditingController(text: file.tags.join(', '));
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Tags for "${file.name}"'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'comma, separated, tags',
+            helperText: 'letters, digits, spaces, _ and -',
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () =>
+                  Navigator.pop(ctx, controller.text),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (result == null) return;
+    final tags = result
+        .split(',')
+        .map((t) => t.trim().toLowerCase())
+        .where((t) => t.isNotEmpty)
+        .toList();
+    try {
+      await ref.read(fileServiceProvider).setTags(file.id, tags);
+      _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Tags failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _downloadFolder(VaultFile folder) async {
+    final dir = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Choose where to save the ZIP');
+    if (dir == null || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(content: Text('Archiving "${folder.name}"…')),
+    );
+    try {
+      await ref.read(fileServiceProvider).downloadArchiveToFile(
+            folder.id,
+            p.join(dir, '${folder.name}.zip'),
+          );
+      messenger.showSnackBar(
+        SnackBar(content: Text('Saved ${folder.name}.zip')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+          SnackBar(content: Text('Archive failed: $e')));
+    }
+  }
+
+  Future<void> _requestFiles(VaultFile folder) async {
+    final passwordController = TextEditingController();
+    const expiryHours = 168.0;
+    final create = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Request files for "${folder.name}"'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+                'Anyone with the link can upload files here (7 days, optional password).'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Password (optional)',
+                hintText: 'Min 4 characters',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Create link')),
+        ],
+      ),
+    );
+    if (create != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final result =
+          await ref.read(fileServiceProvider).createUploadRequest(
+                targetFolderId: folder.id,
+                expiresInHours: expiryHours,
+                password: passwordController.text.trim().isEmpty
+                    ? null
+                    : passwordController.text.trim(),
+              );
+      final base = ref.read(apiClientProvider).serverUrl ?? '';
+      final link = '$base/s/${result.token}';
+      if (!mounted) return;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Upload link ready'),
+          content: SelectableText(link),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Done')),
+            FilledButton.icon(
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Copy'),
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: link));
+                Navigator.pop(ctx);
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Link copied')),
+                );
+              },
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      messenger
+          .showSnackBar(SnackBar(content: Text('Request failed: $e')));
+    }
+  }
+
+  Future<void> _toggleOffline(VaultFile file, bool pinned) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final offline = ref.read(offlineServiceProvider);
+      if (pinned) {
+        await offline.unpin(file.id);
+        messenger.showSnackBar(
+            const SnackBar(content: Text('Offline copy removed.')));
+      } else {
+        messenger.showSnackBar(
+            SnackBar(content: Text('Saving "${file.name}" offline…')));
+        await offline.pin(file);
+        messenger.showSnackBar(
+            const SnackBar(content: Text('Available offline.')));
+      }
+      setState(() {});
+    } catch (e) {
+      messenger.showSnackBar(
+          SnackBar(content: Text('Offline failed: $e')));
+    }
+  }
+
+  Future<void> _newNote() async {
+    final titleController = TextEditingController();
+    final bodyController = TextEditingController();
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('New note'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: titleController,
+              autofocus: true,
+              decoration:
+                  const InputDecoration(labelText: 'Title'),
+            ),
+            TextField(
+              controller: bodyController,
+              decoration:
+                  const InputDecoration(labelText: 'Text'),
+              maxLines: 6,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Upload note')),
+        ],
+      ),
+    );
+    if (save != true || !mounted) return;
+    final title = titleController.text.trim().isEmpty
+        ? 'note'
+        : titleController.text.trim();
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final notesDir = Directory(p.join(docs.path, 'notes'));
+      await notesDir.create(recursive: true);
+      final safe =
+          title.replaceAll(RegExp(r'[^\w.\- ]'), '_');
+      final path = p.join(
+          notesDir.path, '$safe-${DateTime.now().millisecondsSinceEpoch}.txt');
+      await File(path).writeAsString(bodyController.text);
+      if (!mounted) return;
+      ref.read(transferManagerProvider).enqueueUpload(
+            sourcePath: path,
+            parentId: ref.read(currentFolderProvider),
+            name: p.basename(path),
+          );
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Note queued — see Transfers')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Note failed: $e')));
     }
   }
 
@@ -829,6 +1113,11 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   @override
   Widget build(BuildContext context) {
     final visible = _visible;
+    final offlineIds = ref
+        .watch(offlineServiceProvider)
+        .entries
+        .map((e) => e.id)
+        .toSet();
     // Desktop shortcuts: Ctrl+R refresh, Ctrl+Shift+N folder, / search.
     return CallbackShortcuts(
       bindings: {
@@ -928,7 +1217,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                 _buildCrumbs(),
                 _buildSearchBar(),
                 _buildFilterChips(),
-                Expanded(child: _buildBody(visible)),
+                Expanded(child: _buildBody(visible, offlineIds)),
               ],
             ),
             if (_dragging)
@@ -1014,30 +1303,90 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
       );
 
   Widget _buildFilterChips() {
-    const filters = [
-      ('all', 'All'),
-      ('starred', 'Starred'),
-      ('recent', 'Recent'),
-      ('folders', 'Folders'),
-      ('images', 'Images'),
-      ('docs', 'Docs'),
-      ('video', 'Video'),
-    ];
+    final offline = ref.watch(offlineServiceProvider);
+    void pickFilter(String f) {
+      setState(() => _typeFilter = f);
+      // Offline list is local; everything else reloads from the host.
+      if (f != 'offline') _load();
+      if (f == 'offline') {
+        setState(() => _items = offline.asVaultFiles());
+      }
+    }
+
+    Future<void> pickTag() async {
+      if (_typeFilter.startsWith('tag:')) {
+        pickFilter('all');
+        return;
+      }
+      try {
+        final tags = await ref.read(fileServiceProvider).listTags();
+        if (!mounted) return;
+        if (tags.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('No tags yet — long-press a file → Tags.')),
+          );
+          return;
+        }
+        final selected = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Filter by tag'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: tags.length,
+                itemBuilder: (_, i) => ListTile(
+                  leading: const Icon(Icons.tag_rounded),
+                  title: Text(tags[i].tag),
+                  trailing: Text('${tags[i].count}'),
+                  onTap: () => Navigator.pop(ctx, tags[i].tag),
+                ),
+              ),
+            ),
+          ),
+        );
+        if (selected != null && mounted) pickFilter('tag:$selected');
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Tags failed: $e')));
+      }
+    }
+
+    final activeTag =
+        _typeFilter.startsWith('tag:') ? _typeFilter.substring(4) : null;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          for (final f in filters)
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: FilterChip(
+              avatar: const Icon(Icons.tag_rounded, size: 18),
+              label: Text(activeTag == null ? 'Tags' : '#$activeTag'),
+              selected: activeTag != null,
+              onSelected: (_) => pickTag(),
+            ),
+          ),
+          for (final f in const [
+            ('all', 'All'),
+            ('starred', 'Starred'),
+            ('recent', 'Recent'),
+            ('offline', 'Offline'),
+            ('folders', 'Folders'),
+            ('images', 'Images'),
+            ('docs', 'Docs'),
+            ('video', 'Video'),
+          ])
             Padding(
               padding: const EdgeInsets.only(right: 8),
               child: FilterChip(
                 label: Text(f.$2),
                 selected: _typeFilter == f.$1,
-                onSelected: (_) {
-                  setState(() => _typeFilter = f.$1);
-                  _load();
-                },
+                onSelected: (_) => pickFilter(f.$1),
               ),
             ),
         ],
@@ -1045,7 +1394,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     );
   }
 
-  Widget _buildBody(List<VaultFile> visible) {
+  Widget _buildBody(List<VaultFile> visible, Set<String> offlineIds) {
     // Vault-wide server results take over while searching.
     final searching = _query.trim().length >= 2;
     if (searching && _serverResults != null) {
@@ -1080,7 +1429,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
               ],
             ),
           ),
-          Expanded(child: _buildList(results)),
+          Expanded(child: _buildList(results, offlineIds)),
         ],
       );
     }
@@ -1112,28 +1461,54 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     }
     return RefreshIndicator(
       onRefresh: _load,
-      child: _isGridView ? _buildGrid(visible) : _buildList(visible),
+      child: _isGridView
+          ? _buildGrid(visible, offlineIds)
+          : _buildList(visible, offlineIds),
     );
   }
 
-  String _subtitle(VaultFile f) {
-    if (f.isFolder) return formatDateTime(f.modifiedAt);
-    return '${formatBytes(f.size)} • ${formatDateTime(f.modifiedAt)}';
+  String _subtitle(VaultFile f, bool pinned) {
+    final parts = <String>[];
+    if (f.isFolder) {
+      parts.add(formatDateTime(f.modifiedAt));
+    } else {
+      parts.add('${formatBytes(f.size)} • ${formatDateTime(f.modifiedAt)}');
+    }
+    if (f.tags.isNotEmpty) {
+      parts.add(f.tags.map((t) => '#$t').join(' '));
+    }
+    if (pinned) parts.add('offline');
+    return parts.join(' • ');
   }
 
-  Widget _buildList(List<VaultFile> visible) => ListView.builder(
+  Widget _buildList(List<VaultFile> visible, Set<String> offlineIds) =>
+      ListView.builder(
         itemCount: visible.length,
         padding: const EdgeInsets.symmetric(horizontal: 8),
         itemBuilder: (context, i) {
           final file = visible[i];
           final selected = _selected.contains(file.id);
+          final pinned = offlineIds.contains(file.id);
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
             child: ListTile(
               leading: VaultFileIcon(name: file.name, isFolder: file.isFolder),
-              title: Text(file.name,
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(_subtitle(file)),
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(file.name,
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ),
+                  if (pinned)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: Icon(Icons.cloud_off_rounded,
+                          size: 16,
+                          color: Theme.of(context).colorScheme.primary),
+                    ),
+                ],
+              ),
+              subtitle: Text(_subtitle(file, pinned)),
               selected: selected,
               selectedTileColor: Theme.of(context)
                   .colorScheme
@@ -1169,7 +1544,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         },
       );
 
-  Widget _buildGrid(List<VaultFile> visible) =>
+  Widget _buildGrid(List<VaultFile> visible, Set<String> offlineIds) =>
       LayoutBuilder(builder: (context, constraints) {
         final w = constraints.maxWidth;
         final cols = w > 1100
@@ -1238,7 +1613,7 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        _subtitle(file),
+                        _subtitle(file, offlineIds.contains(file.id)),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1270,6 +1645,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
               onTap: () {
                 Navigator.pop(ctx);
                 _upload();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.note_add_rounded),
+              title: const Text('New Note'),
+              subtitle: const Text('Write text straight to the cloud'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _newNote();
               },
             ),
             ListTile(

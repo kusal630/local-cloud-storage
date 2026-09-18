@@ -24,12 +24,18 @@ class ShareRepository {
         createdAt:
             DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
         downloadCount: (row['download_count'] as int?) ?? 0,
+        mode: (row['mode'] as String?) ?? 'download',
       );
 
   /// Creates a share and returns the plaintext token exactly once.
+  ///
+  /// [mode] is `download` (fileId required) or `upload` (targetFolderId
+  /// required — a file-request link).
   Future<({String token, SharedLink link})> create({
-    required String fileId,
+    String fileId = '',
     required String fileName,
+    String mode = 'download',
+    String? targetFolderId,
     Duration? expiresIn,
     String? password,
   }) async {
@@ -43,8 +49,8 @@ class ShareRepository {
       '''
       INSERT INTO shares
         (token_hash, token_prefix, file_id, password_hash, expires_at,
-         download_count, created_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?)
+         download_count, created_at, mode, target_folder_id)
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
       ''',
       [
         Cipher.sha256String(token),
@@ -55,6 +61,8 @@ class ShareRepository {
             ? null
             : DateTime.now().add(expiresIn).millisecondsSinceEpoch,
         now,
+        mode,
+        targetFolderId,
       ],
     );
     return (
@@ -68,6 +76,7 @@ class ShareRepository {
             ? null
             : DateTime.now().add(expiresIn),
         createdAt: DateTime.fromMillisecondsSinceEpoch(now),
+        mode: mode,
       ),
     );
   }

@@ -5,6 +5,7 @@ import '../client/session_store.dart';
 import '../client/services/auth_service.dart';
 import '../client/services/backup_service.dart';
 import '../client/services/file_service.dart';
+import '../client/services/offline_service.dart';
 import '../client/services/transfer_manager.dart';
 import '../data/datasources/vault.dart';
 import '../data/models/storage_status.dart';
@@ -51,6 +52,13 @@ final backupServiceProvider = ChangeNotifierProvider<BackupService>((ref) {
     ref.watch(fileServiceProvider),
     ref.watch(transferManagerProvider),
   );
+  svc.load();
+  return svc;
+});
+
+final offlineServiceProvider =
+    ChangeNotifierProvider<OfflineService>((ref) {
+  final svc = OfflineService(ref.watch(fileServiceProvider));
   svc.load();
   return svc;
 });

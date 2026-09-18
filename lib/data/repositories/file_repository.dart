@@ -41,7 +41,102 @@ class FileRepository {
             ? null
             : DateTime.fromMillisecondsSinceEpoch(
                 row['last_opened_at'] as int),
+        tags: parseTags(row['tags'] as String?),
       );
+
+  /// Normalizes a tag list: lowercase, trimmed, deduped, bounded.
+  static List<String> parseTags(String? raw) {
+    if (raw == null || raw.isEmpty) return const [];
+    final out = <String>[];
+    for (final part in raw.split(',')) {
+      final tag = part.trim().toLowerCase();
+      if (tag.isEmpty || out.contains(tag)) continue;
+      if (!RegExp(r'^[a-z0-9][a-z0-9 _-]{0,30}[a-z0-9]?$').hasMatch(tag)) {
+        continue;
+      }      out.add(tag);
+      if (out.length >= 10) break;
+    }
+    return out;
+  }
+
+  VaultFile setTags(String id, List<String> tags) {
+    final entry = getById(id);
+    if (entry.isTrashed) {
+      throw const ValidationException('Trashed items cannot be tagged.');
+    }
+    _db.raw.execute(
+      'UPDATE files SET tags = ?, modified_at = modified_at WHERE id = ?',
+      [tags.join(','), id],
+    );
+    return getById(id);
+  }
+
+  List<({String tag, int count})> listTags() {
+    final rows = _db.raw.select(
+      '''
+      SELECT tags FROM files
+      WHERE deleted_at IS NULL AND tags != '' AND id != ?
+      ''',
+      [AppConstants.rootFolderId],
+    );
+    final counts = <String, int>{};
+    for (final row in rows) {
+      for (final tag in parseTags(row['tags'] as String?)) {
+        counts[tag] = (counts[tag] ?? 0) + 1;
+      }
+    }
+    final result = counts.entries
+        .map((e) => (tag: e.key, count: e.value))
+        .toList()
+      ..sort((a, b) => b.count.compareTo(a.count));
+    return result;
+  }
+
+  List<VaultFile> listByTag(String tag) {
+    final clean = tag.trim().toLowerCase();
+    final rows = _db.raw.select(
+      r'''
+      SELECT * FROM files
+      WHERE deleted_at IS NULL AND id != ?
+        AND (',' || tags || ',') LIKE ? ESCAPE '\'
+      ORDER BY name COLLATE NOCASE ASC LIMIT 200
+      ''',
+      [AppConstants.rootFolderId, '%,${_escapeLike(clean)},%'],
+    );
+    return rows.map(_fromRow).toList();
+  }
+
+  /// Groups live files sharing a checksum (duplicate finder).
+  List<({String checksum, int size, List<VaultFile> files})> duplicates(
+      {int limit = 50}) {
+    final groups = _db.raw.select(
+      '''
+      SELECT checksum, size, COUNT(*) AS n FROM files
+      WHERE deleted_at IS NULL AND type = 'file'
+        AND checksum IS NOT NULL AND id != ?
+      GROUP BY checksum, size HAVING n > 1
+      ORDER BY n DESC LIMIT ?
+      ''',
+      [AppConstants.rootFolderId, limit.clamp(1, 100)],
+    );
+    final out = <({String checksum, int size, List<VaultFile> files})>[];
+    for (final g in groups) {
+      final members = _db.raw.select(
+        '''
+        SELECT * FROM files
+        WHERE deleted_at IS NULL AND checksum = ? AND size = ?
+        ORDER BY modified_at ASC
+        ''',
+        [g['checksum'], g['size']],
+      );
+      out.add((
+        checksum: g['checksum'] as String,
+        size: (g['size'] as int?) ?? 0,
+        files: members.map(_fromRow).toList(),
+      ));
+    }
+    return out;
+  }
 
   VaultFile setFavorite(String id, bool value) {
     final entry = getById(id);
@@ -371,6 +466,7 @@ class FileRepository {
       _db.raw.execute(
         'DELETE FROM file_versions WHERE file_id NOT IN (SELECT id FROM files)',
       );
+      _pruneDanglingMeta();
       return orphaned;
     });
   }
@@ -390,6 +486,7 @@ class FileRepository {
       _db.raw.execute(
         'DELETE FROM file_versions WHERE file_id NOT IN (SELECT id FROM files)',
       );
+      _pruneDanglingMeta();
       for (final blobId in blobIds) {
         if (blobs.deleteIfUnused(blobId)) {
           orphaned.add(blobs.getById(blobId));
@@ -399,8 +496,20 @@ class FileRepository {
     });
   }
 
-  List<String> _descendantBlobIds(String id) {
-    final rows = _db.raw.select(
+  /// Drops comments/shares/versions whose file rows are gone.
+  void _pruneDanglingMeta() {
+    _db.raw.execute(
+      'DELETE FROM file_versions WHERE file_id NOT IN (SELECT id FROM files)',
+    );
+    _db.raw.execute(
+      'DELETE FROM comments WHERE file_id NOT IN (SELECT id FROM files)',
+    );
+    _db.raw.execute(
+      'DELETE FROM shares WHERE file_id NOT IN (SELECT id FROM files) AND file_id != \'\'',
+    );
+  }
+
+  List<String> _descendantBlobIds(String id) {    final rows = _db.raw.select(
       '''
       WITH RECURSIVE subtree(id) AS (
         SELECT id FROM files WHERE id = ?
@@ -511,12 +620,8 @@ class FileRepository {
         'DELETE FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?',
         [cutoff.millisecondsSinceEpoch],
       );
-      // Detach versions of files that no longer exist.
-      _db.raw.execute(
-        '''
-        DELETE FROM file_versions WHERE file_id NOT IN (SELECT id FROM files)
-        ''',
-      );
+      // Detach versions/meta of files that no longer exist.
+      _pruneDanglingMeta();
       for (final blobId in blobIds) {
         if (blobs.deleteIfUnused(blobId)) {
           orphaned.add(blobs.getById(blobId));

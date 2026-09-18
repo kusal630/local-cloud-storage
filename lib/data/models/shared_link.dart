@@ -10,6 +10,7 @@ class SharedLink extends Equatable {
     this.expiresAt,
     required this.createdAt,
     this.downloadCount = 0,
+    this.mode = 'download',
   });
 
   /// First 12 chars of the token (the full token is never listed).
@@ -20,6 +21,10 @@ class SharedLink extends Equatable {
   final DateTime? expiresAt;
   final DateTime createdAt;
   final int downloadCount;
+  /// `download` or `upload` (file request).
+  final String mode;
+
+  bool get isUploadRequest => mode == 'upload';
 
   @override
   List<Object?> get props => [
@@ -30,5 +35,6 @@ class SharedLink extends Equatable {
         expiresAt,
         createdAt,
         downloadCount,
+        mode,
       ];
 }

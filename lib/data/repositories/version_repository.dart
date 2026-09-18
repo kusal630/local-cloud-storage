@@ -62,18 +62,47 @@ class VersionRepository {
       ''',
       [id, fileId, next, blobId, size, checksum, mime, now],
     );
-    // Keep history bounded: newest 20 per file.
-    _db.raw.execute(
-      '''
-      DELETE FROM file_versions
-      WHERE file_id = ?
-        AND id NOT IN (
-          SELECT id FROM file_versions
-          WHERE file_id = ? ORDER BY version DESC LIMIT 20
-        )
-      ''',
-      [fileId, fileId],
-    );
+    // Staggered pruning (Syncthing/Nextcloud-style): many recent versions,
+    // fewer old ones — newest 3 always, then daily for 30 days, then weekly.
+    final all = listForFile(fileId);
+    final keep = <String>{};
+    final days = <String>{};
+    final weeks = <String>{};
+    final nowDt = DateTime.now();
+    var kept = 0;
+    for (var i = 0; i < all.length && kept < 50; i++) {
+      final v = all[i];
+      final age = nowDt.difference(v.createdAt);
+      if (i < 3 || age < const Duration(hours: 24)) {
+        keep.add(v.id);
+        kept++;
+      } else if (age < const Duration(days: 30)) {
+        final day =
+            '${v.createdAt.year}-${v.createdAt.month}-${v.createdAt.day}';
+        if (days.add(day)) {
+          keep.add(v.id);
+          kept++;
+        }
+      } else {
+        // ISO week bucket.
+        final weekStart = v.createdAt
+            .subtract(Duration(days: v.createdAt.weekday - 1));
+        final week =
+            '${weekStart.year}-${weekStart.month}-${weekStart.day}';
+        if (weeks.add(week)) {
+          keep.add(v.id);
+          kept++;
+        }
+      }
+    }
+    if (keep.length < all.length) {
+      for (final v in all) {
+        if (!keep.contains(v.id)) {
+          _db.raw.execute(
+              'DELETE FROM file_versions WHERE id = ?', [v.id]);
+        }
+      }
+    }
     return getVersion(fileId, next)!;
   }
 
