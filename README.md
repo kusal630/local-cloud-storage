@@ -48,6 +48,26 @@ upload, download, share, and back up.
 - **Background backup** — Android WorkManager runs backup ~every 6h (opt-in)
 - **Folder details** — recursive size/file counts; lists remember scroll
   position per folder
+
+## What you can do with it (v2.3.0 world-class wave)
+
+- **Haptic feedback** — distinct tactile patterns for taps, selections, success, errors
+- **AMOLED black mode** — true #000000 black for OLED power savings
+- **Glassmorphism UI** — backdrop blur cards, buttons, and overlays
+- **Custom page transitions** — slide-up, fade-through, shared-axis animations
+- **Smart search with filters** — filter by images, videos, audio, docs, archives, notes
+- **Accessibility** — semantic labels, high contrast mode, reduced motion support
+- **Batch operations** — select multiple files, delete/move/copy/share in bulk
+- **Enhanced image viewer** — pinch-to-zoom, double-tap zoom, controls overlay
+- **Video player controls** — progress bar, seeking, fullscreen toggle
+- **File info panel** — metadata, checksum, path display
+- **Security score** — 0-100 score with security checks and tips
+- **Audit log** — track all file operations with filtering and search
+- **Session manager** — view and revoke active device sessions
+- **Offline files manager** — manage pinned files with storage info
+- **Conflict resolver** — side-by-side comparison for sync conflicts
+- **LRU image cache** — 50MB cache with automatic eviction
+- **Help center** — searchable articles, FAQ accordion, contact support
 - **Fixed**: password login actually verifies now (a hex-decoder bug meant it
   never accepted any password — pairing was unaffected)## What you can do with it
 
