@@ -54,12 +54,17 @@ class _WelcomeBody extends ConsumerWidget {
             child: ListView(
               padding: const EdgeInsets.all(28),
               children: [
-                const SizedBox(height: 24),
+                const SizedBox(height: 40),
                 const Center(child: AppLogo(size: 104))
                     .animate()
                     .scale(
-                        duration: 450.ms, curve: Curves.easeOutBack),
-                const SizedBox(height: 20),
+                        duration: 500.ms, curve: Curves.easeOutBack)
+                    .then()
+                    .shimmer(
+                      duration: 1200.ms,
+                      color: scheme.primary.withValues(alpha: 0.15),
+                    ),
+                const SizedBox(height: 24),
                 Text(
                   AppConstants.appName,
                   textAlign: TextAlign.center,
@@ -69,55 +74,62 @@ class _WelcomeBody extends ConsumerWidget {
                       ),
                 )
                     .animate()
-                    .fadeIn(delay: 120.ms, duration: 350.ms)
+                    .fadeIn(delay: 150.ms, duration: 400.ms)
                     .slideY(begin: 0.3, end: 0),
-                const SizedBox(height: 8),
+                const SizedBox(height: 10),
                 Text(
                   'Your private local cloud.\nNo internet. No subscriptions. Just your drive.',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                         color: scheme.onSurfaceVariant,
+                        height: 1.5,
                       ),
                 ),
-                const SizedBox(height: 16),
-                const Center(
+                const SizedBox(height: 20),
+                Center(
                   child: StatusPill(
-                      label: 'LAN-ONLY • PRIVATE BY DESIGN',
-                      color: Color(0xFF0E7C7B)),
+                      label: 'LAN-ONLY \u2022 PRIVATE BY DESIGN',
+                      color: scheme.primary),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 28),
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(20),
                     child: Column(
                       children: [
-                        FilledButton.icon(
-                          onPressed: () {
-                            ref.read(appModeProvider.notifier).state =
-                                AppMode.host;
-                            context.push('/host/setup');
-                          },
-                          icon: const Icon(Icons.dns_rounded),
-                          label: const Text('Start Storage Node'),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: () {
+                              ref.read(appModeProvider.notifier).state =
+                                  AppMode.host;
+                              context.push('/host/setup');
+                            },
+                            icon: const Icon(Icons.dns_rounded),
+                            label: const Text('Start Storage Node'),
+                          ),
                         ),
                         const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                          onPressed: () {
-                            ref.read(appModeProvider.notifier).state =
-                                AppMode.client;
-                            context.push('/client/connect');
-                          },
-                          icon: const Icon(Icons.phone_android_rounded),
-                          label: const Text('Connect to Storage Node'),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              ref.read(appModeProvider.notifier).state =
+                                  AppMode.client;
+                              context.push('/client/connect');
+                            },
+                            icon: const Icon(Icons.phone_android_rounded),
+                            label: const Text('Connect to Storage Node'),
+                          ),
                         ),
                       ],
                     ),
                   ),
                 )
                     .animate()
-                    .fadeIn(delay: 220.ms, duration: 350.ms)
+                    .fadeIn(delay: 250.ms, duration: 400.ms)
                     .slideY(begin: 0.4, end: 0),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
                 _FeatureRow(
                   icon: Icons.bolt_rounded,
                   title: 'Fast LAN transfers',
@@ -133,13 +145,21 @@ class _WelcomeBody extends ConsumerWidget {
                   title: 'You hold the keys',
                   subtitle: 'Argon2id + short-lived tokens on your network',
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  'HOST on this phone or desktop shares storage on :8484 and keeps running in the background. CLIENT on any device browses, uploads and backs up over any route to it.',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.outline,
-                      ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    'HOST on this phone or desktop shares storage on :8484 and keeps running in the background. CLIENT on any device browses, uploads and backs up over any route to it.',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                          height: 1.5,
+                        ),
+                  ),
                 ),
                 const SizedBox(height: 24),
               ],
@@ -171,9 +191,9 @@ class _FeatureRow extends StatelessWidget {
               color: scheme.primaryContainer.withValues(alpha: 0.6),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Icon(icon, color: scheme.onPrimaryContainer),
+            child: Icon(icon, color: scheme.onPrimaryContainer, size: 22),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -183,6 +203,7 @@ class _FeatureRow extends StatelessWidget {
                         .textTheme
                         .titleSmall
                         ?.copyWith(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 2),
                 Text(subtitle,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.onSurfaceVariant,

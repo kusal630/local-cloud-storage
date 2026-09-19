@@ -98,15 +98,16 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   const SectionHeader(title: 'DISK USAGE'),
-                                  StorageMeter(
-                                    fraction: _status!.usedFraction,
-                                    usedLabel:
-                                        'Used: ${formatBytes(_status!.used)}',
-                                    freeLabel:
-                                        'Free: ${formatBytes(_status!.free)}',
-                                    color: Theme.of(context).colorScheme.error,
-                                  ),
                                   const SizedBox(height: 8),
+                                  Center(
+                                    child: StorageDonut(
+                                      fraction: _status!.usedFraction,
+                                      usedLabel: 'Used',
+                                      freeLabel: 'Free: ${formatBytes(_status!.free)}',
+                                      color: Theme.of(context).colorScheme.error,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
                                   _buildRow('Total', formatBytes(_status!.total)),
                                   _buildRow('Free', formatBytes(_status!.free)),
                                   _buildRow('Used', formatBytes(_status!.used)),

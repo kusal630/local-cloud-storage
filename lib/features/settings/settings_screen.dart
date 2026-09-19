@@ -190,7 +190,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _SettingsTile(
                 icon: Icons.info_outline,
                 title: 'About LocalVault',
-                subtitle: 'Version 1.0.0',
+                subtitle: 'Version 1.7.0',
                 onTap: () => _showAbout(context),
               ),
             ],
@@ -335,7 +335,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'LocalVault',
-      applicationVersion: '1.0.0',
+      applicationVersion: '1.7.0',
       children: [
         const Text(
           'LocalVault turns local storage into a private local cloud. '
@@ -343,6 +343,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
         const SizedBox(height: 16),
         const Text('Built with Flutter and Dart.'),
+        const SizedBox(height: 8),
+        Text(
+          'Your files never leave your devices.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.outline,
+              ),
+        ),
       ],
     );
   }

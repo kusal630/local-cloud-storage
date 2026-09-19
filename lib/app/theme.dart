@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 const _seedColor = Color(0xFF0E7C7B);
 const _radiusM = 16.0;
 const _radiusS = 12.0;
+const _radiusXS = 8.0;
 
 ColorScheme _scheme(Brightness brightness) => ColorScheme.fromSeed(
       seedColor: _seedColor,
@@ -15,35 +16,51 @@ ColorScheme _scheme(Brightness brightness) => ColorScheme.fromSeed(
 
 ThemeData _buildTheme(Brightness brightness) {
   final scheme = _scheme(brightness);
+  final isDark = brightness == Brightness.dark;
   return ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
-    scaffoldBackgroundColor: scheme.surface,
+    scaffoldBackgroundColor: isDark ? scheme.surface : scheme.surface,
     appBarTheme: AppBarTheme(
       centerTitle: true,
       backgroundColor: scheme.surface,
       foregroundColor: scheme.onSurface,
       elevation: 0,
       scrolledUnderElevation: 1,
+      titleTextStyle: TextStyle(
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
+        color: scheme.onSurface,
+        letterSpacing: -0.3,
+      ),
     ),
     cardTheme: CardThemeData(
       elevation: 0,
       color: scheme.surfaceContainerLow,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(_radiusM),
-        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        side: BorderSide(
+          color: scheme.outlineVariant.withValues(alpha: isDark ? 0.3 : 0.5),
+          width: isDark ? 0.5 : 1,
+        ),
       ),
       margin: EdgeInsets.zero,
     ),
     dialogTheme: DialogThemeData(
       shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(_radiusM + 4)),
+      titleTextStyle: TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+        color: scheme.onSurface,
+      ),
     ),
-    bottomSheetTheme: const BottomSheetThemeData(
+    bottomSheetTheme: BottomSheetThemeData(
       showDragHandle: true,
-      shape: RoundedRectangleBorder(
+      shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
+      backgroundColor: isDark ? scheme.surfaceContainerHigh : scheme.surface,
     ),
     inputDecorationTheme: InputDecorationTheme(
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(_radiusS)),
@@ -51,9 +68,14 @@ ThemeData _buildTheme(Brightness brightness) {
         borderRadius: BorderRadius.circular(_radiusS),
         borderSide: BorderSide(color: scheme.outlineVariant),
       ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(_radiusS),
+        borderSide: BorderSide(color: scheme.primary, width: 2),
+      ),
       filled: true,
       fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      labelStyle: TextStyle(color: scheme.onSurfaceVariant),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
@@ -61,6 +83,7 @@ ThemeData _buildTheme(Brightness brightness) {
         padding: const EdgeInsets.symmetric(horizontal: 24),
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(_radiusS)),
+        elevation: 0,
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(
@@ -69,6 +92,7 @@ ThemeData _buildTheme(Brightness brightness) {
         padding: const EdgeInsets.symmetric(horizontal: 24),
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(_radiusS)),
+        elevation: 0,
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
@@ -88,22 +112,31 @@ ThemeData _buildTheme(Brightness brightness) {
     floatingActionButtonTheme: FloatingActionButtonThemeData(
       shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(_radiusM)),
+      elevation: 2,
     ),
     chipTheme: ChipThemeData(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      side: BorderSide(color: scheme.outlineVariant),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radiusXS)),
+      side: BorderSide(
+        color: scheme.outlineVariant.withValues(alpha: isDark ? 0.4 : 0.6),
+      ),
+      labelStyle: TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        color: scheme.onSurface,
+      ),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(_radiusS)),
+          borderRadius: BorderRadius.circular(_radiusXS)),
     ),
     progressIndicatorTheme: ProgressIndicatorThemeData(
       borderRadius: BorderRadius.circular(4),
+      color: scheme.primary,
     ),
     listTileTheme: ListTileThemeData(
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(_radiusS)),
+          borderRadius: BorderRadius.circular(_radiusXS)),
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
     ),
     dividerTheme: DividerThemeData(
@@ -114,16 +147,21 @@ ThemeData _buildTheme(Brightness brightness) {
     navigationBarTheme: NavigationBarThemeData(
       indicatorColor: scheme.primaryContainer,
       labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
+      elevation: 0,
+      backgroundColor: isDark ? scheme.surfaceContainer : scheme.surface,
     ),
     searchBarTheme: SearchBarThemeData(
       shape: WidgetStatePropertyAll(
         RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
       ),
+      elevation: WidgetStatePropertyAll(isDark ? 0 : 1),
     ),
     textTheme: Typography.englishLike2021.apply(
       bodyColor: scheme.onSurface,
       displayColor: scheme.onSurface,
     ),
+    splashColor: scheme.primary.withValues(alpha: 0.08),
+    highlightColor: scheme.primary.withValues(alpha: 0.04),
   );
 }
 

@@ -125,6 +125,11 @@ class AppLogo extends StatelessWidget {
             blurRadius: 24,
             offset: const Offset(0, 12),
           ),
+          BoxShadow(
+            color: scheme.primary.withValues(alpha: 0.15),
+            blurRadius: 48,
+            offset: const Offset(0, 24),
+          ),
         ],
       ),
       child: Icon(Icons.cloud_off_outlined,
@@ -355,4 +360,68 @@ String formatDuration(Duration d) {
   if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
   if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds % 60}s';
   return '${d.inSeconds}s';
+}
+
+/// Circular storage usage ring — more scannable than a linear bar.
+class StorageDonut extends StatelessWidget {
+  const StorageDonut({
+    super.key,
+    required this.fraction,
+    required this.usedLabel,
+    this.freeLabel,
+    this.size = 120,
+    this.strokeWidth = 10,
+    this.color,
+  });
+  final double fraction;
+  final String usedLabel;
+  final String? freeLabel;
+  final double size;
+  final double strokeWidth;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final c = color ?? scheme.primary;
+    final clamped = fraction.clamp(0.0, 1.0);
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          SizedBox(
+            width: size,
+            height: size,
+            child: CircularProgressIndicator(
+              value: clamped,
+              strokeWidth: strokeWidth,
+              color: c,
+              backgroundColor: scheme.surfaceContainerHighest,
+              strokeCap: StrokeCap.round,
+            ),
+          ),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${(clamped * 100).round()}%',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: c,
+                    ),
+              ),
+              Text(
+                usedLabel,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }

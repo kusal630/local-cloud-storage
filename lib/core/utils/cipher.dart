@@ -16,7 +16,7 @@ abstract class Cipher {
   static final Random _random = Random.secure();
 
   static const int _defaultHashIterations = 3;
-  static const int _defaultHashMemoryKiB = 32 * 1024;
+  static const int _defaultHashMemoryKiB = 64 * 1024;
   static const int _defaultHashParallelism = 1;
   static const int _saltLength = 16;
 
