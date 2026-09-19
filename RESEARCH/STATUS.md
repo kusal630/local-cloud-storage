@@ -10,4 +10,5 @@
 2026-09-19 | done: AppLogo enhanced with double shadow | next: run analyze and tests
 2026-09-19 | done: v1.8.0 world-class wave: haptics, AMOLED, glassmorphism, transitions, search, accessibility | next: v1.9.0 performance & polish wave
 2026-09-19 | done: v1.9.0 performance wave: lazy loading, batch operations, file preview, video controls | next: v2.0.0 security & privacy wave
-2026-09-19 | done: v2.0.0 security wave: audit log, session manager, security score, tips | next: build and release APK
+2026-09-19 | done: v2.0.0 security wave: audit log, session manager, security score, tips | next: v2.1.0 offline & sync wave
+2026-09-19 | done: v2.1.0 offline & sync wave: sync status, offline manager, conflict resolver | next: build and release APK
