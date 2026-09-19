@@ -14,3 +14,6 @@
 2026-09-19 | done: v2.1.0 offline & sync wave: sync status, offline manager, conflict resolver | next: v2.2.0 performance optimization wave
 2026-09-19 | done: v2.2.0 performance wave: image cache, request batcher, connection pool, memory optimizer | next: v2.3.0 final polish wave
 2026-09-19 | done: v2.3.0 final polish wave: onboarding tooltips, feature highlights, help center, FAQ | next: build and release APK
+2026-09-19 | done: v2.3.0 final release built and tagged | next: ALL DONE
+
+ALL DONE
