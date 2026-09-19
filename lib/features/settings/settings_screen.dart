@@ -205,7 +205,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _SettingsTile(
                 icon: Icons.info_outline,
                 title: 'About LocalVault',
-                subtitle: 'Version 1.8.0',
+                subtitle: 'Version 2.3.0',
                 onTap: () => _showAbout(context),
               ),
             ],
@@ -350,7 +350,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'LocalVault',
-      applicationVersion: '1.8.0',
+      applicationVersion: '2.3.0',
       children: [
         const Text(
           'LocalVault turns local storage into a private local cloud. '

@@ -3,7 +3,7 @@ abstract class AppConstants {
   AppConstants._();
 
   static const String appName = 'LocalVault';
-  static const String appVersion = '1.8.0';
+  static const String appVersion = '2.3.0';
 
   /// Default HTTP port used by Host Mode.
   static const int defaultPort = 8484;
