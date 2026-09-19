@@ -60,6 +60,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final themeMode = ref.watch(themeModeProvider);
+    final isAmoled = ref.watch(amoledProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -74,7 +75,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 subtitle: themeMode == ThemeMode.system
                     ? 'System'
                     : themeMode == ThemeMode.dark
-                        ? 'Dark'
+                        ? isAmoled ? 'AMOLED Black' : 'Dark'
                         : 'Light',
                 onTap: () {
                   final modes = [
@@ -83,10 +84,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ThemeMode.dark
                   ];
                   final idx = modes.indexOf(themeMode);
-                  ref.read(themeModeProvider.notifier).state =
-                      modes[(idx + 1) % modes.length];
+                  final next = modes[(idx + 1) % modes.length];
+                  ref.read(themeModeProvider.notifier).state = next;
+                  if (next == ThemeMode.dark && !isAmoled) {
+                    ref.read(amoledProvider.notifier).state = true;
+                  } else if (next == ThemeMode.dark && isAmoled) {
+                    ref.read(amoledProvider.notifier).state = false;
+                  }
                 },
               ),
+              if (themeMode == ThemeMode.dark)
+                SwitchListTile(
+                  secondary: const Icon(Icons.brightness_6_rounded),
+                  title: const Text('AMOLED Black'),
+                  subtitle: const Text('True black for OLED power savings'),
+                  value: isAmoled,
+                  onChanged: (v) =>
+                      ref.read(amoledProvider.notifier).state = v,
+                ),
             ],
           ),
           _SettingsSection(
@@ -190,7 +205,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _SettingsTile(
                 icon: Icons.info_outline,
                 title: 'About LocalVault',
-                subtitle: 'Version 1.7.0',
+                subtitle: 'Version 1.8.0',
                 onTap: () => _showAbout(context),
               ),
             ],
@@ -335,7 +350,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'LocalVault',
-      applicationVersion: '1.7.0',
+      applicationVersion: '1.8.0',
       children: [
         const Text(
           'LocalVault turns local storage into a private local cloud. '

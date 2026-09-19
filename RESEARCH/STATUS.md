@@ -8,3 +8,4 @@
 2026-09-19 | done: storage donut ring visualization | next: storage screen integration
 2026-09-19 | done: storage screen donut chart | next: common widget improvements
 2026-09-19 | done: AppLogo enhanced with double shadow | next: run analyze and tests
+2026-09-19 | done: v1.8.0 world-class wave: haptics, AMOLED, glassmorphism, transitions, search, accessibility | next: build APK

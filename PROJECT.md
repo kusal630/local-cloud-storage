@@ -2,20 +2,20 @@
 Idea: LocalVault — A private local cloud storage app that turns any disk into your own cloud. No accounts, no subscriptions, no internet required. Files never leave your devices.
 Platform: Flutter (Android, Windows, Linux, macOS, Raspberry Pi)
 
-# Features (v1.7.0 — best-in-world wave)
-1. Premium Material 3 design system with dark mode polish
-2. Enhanced lock screen with animated security UX
-3. Storage donut visualization for instant capacity scan
-4. Better typography and visual hierarchy across all screens
-5. Improved button sizing and layout consistency
-6. Rate limiting on all auth endpoints (login, pairing, refresh)
-7. Argon2id memory upgraded to 64 MiB (matching documented spec)
-8. Version display fixed across all screens
-9. Improved error messages with retry guidance
-10. Better empty states and loading indicators
+# Features (v1.8.0 — world-class wave)
+1. Haptic feedback system with distinct patterns (light/medium/heavy/success/error)
+2. AMOLED black mode for OLED power savings (#000000 true black)
+3. Glassmorphism widgets (backdrop blur cards, buttons, overlays)
+4. Custom page transitions (slide-up, fade-through, shared-axis, scale)
+5. Smart search with filter chips (images, videos, audio, docs, archives, notes)
+6. Accessibility improvements (semantic labels, high contrast, reduced motion)
+7. Haptic-aware interactive widgets (buttons, switches, list tiles)
+8. Premium Material 3 design system with dark mode polish
+9. Enhanced lock screen with animated security UX
+10. Storage donut visualization for instant capacity scan
 
 # Done criteria (loop stops when ALL true)
-- All v1.7.0 features implemented and tested
+- All v1.8.0 features implemented and tested
 - DESIGN.md system applied to every screen
 - Build passes, no critical bugs
 - flutter analyze clean

@@ -1,26 +1,46 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// LocalVault premium Material 3 design system.
 ///
 /// Deep-teal seed gives a private-vault feel distinct from generic blue.
 /// Both schemes share one component-theme builder so light/dark stay in sync.
+/// AMOLED black mode for OLED screens — true #000000 black saves battery.
 const _seedColor = Color(0xFF0E7C7B);
 const _radiusM = 16.0;
 const _radiusS = 12.0;
 const _radiusXS = 8.0;
 
-ColorScheme _scheme(Brightness brightness) => ColorScheme.fromSeed(
+/// AMOLED black for OLED power savings.
+const _amoledBlack = Color(0xFF000000);
+
+ColorScheme _scheme(Brightness brightness, {bool amoled = false}) {
+  if (amoled) {
+    return ColorScheme.fromSeed(
       seedColor: _seedColor,
       brightness: brightness,
+    ).copyWith(
+      surface: _amoledBlack,
+      surfaceContainerLowest: _amoledBlack,
+      surfaceContainerLow: const Color(0xFF0A0A0A),
+      surfaceContainer: const Color(0xFF111111),
+      surfaceContainerHigh: const Color(0xFF1A1A1A),
+      surfaceContainerHighest: const Color(0xFF222222),
     );
+  }
+  return ColorScheme.fromSeed(
+    seedColor: _seedColor,
+    brightness: brightness,
+  );
+}
 
-ThemeData _buildTheme(Brightness brightness) {
-  final scheme = _scheme(brightness);
+ThemeData _buildTheme(Brightness brightness, {bool amoled = false}) {
+  final scheme = _scheme(brightness, amoled: amoled);
   final isDark = brightness == Brightness.dark;
   return ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
-    scaffoldBackgroundColor: isDark ? scheme.surface : scheme.surface,
+    scaffoldBackgroundColor: scheme.surface,
     appBarTheme: AppBarTheme(
       centerTitle: true,
       backgroundColor: scheme.surface,
@@ -167,3 +187,21 @@ ThemeData _buildTheme(Brightness brightness) {
 
 final ThemeData lightTheme = _buildTheme(Brightness.light);
 final ThemeData darkTheme = _buildTheme(Brightness.dark);
+final ThemeData amoledTheme = _buildTheme(Brightness.dark, amoled: true);
+
+/// System UI overlay styles for immersive experience.
+SystemUiOverlayStyle get lightOverlay => const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarBrightness: Brightness.light,
+      statusBarIconBrightness: Brightness.dark,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness: Brightness.dark,
+    );
+
+SystemUiOverlayStyle get darkOverlay => const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarBrightness: Brightness.dark,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness: Brightness.light,
+    );

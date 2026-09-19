@@ -141,10 +141,12 @@ class _LocalVaultAppState extends ConsumerState<LocalVaultApp>
     ref.listen<int>(lockNowProvider, (previous, next) {
       if (_locked == false) setState(() => _locked = true);
     });
+    final isAmoled = ref.watch(amoledProvider);
+    final effectiveDark = isAmoled ? amoledTheme : darkTheme;
     if (_locked == null) {
       return MaterialApp(
         theme: lightTheme,
-        darkTheme: darkTheme,
+        darkTheme: effectiveDark,
         debugShowCheckedModeBanner: false,
         home: const Scaffold(
             body: Center(child: CircularProgressIndicator())),
@@ -153,7 +155,7 @@ class _LocalVaultAppState extends ConsumerState<LocalVaultApp>
     if (_locked == true) {
       return MaterialApp(
         theme: lightTheme,
-        darkTheme: darkTheme,
+        darkTheme: effectiveDark,
         themeMode: ref.watch(themeModeProvider),
         debugShowCheckedModeBanner: false,
         home: LockScreen(onUnlocked: () => setState(() => _locked = false)),
@@ -164,7 +166,7 @@ class _LocalVaultAppState extends ConsumerState<LocalVaultApp>
     return MaterialApp.router(
       title: 'LocalVault',
       theme: lightTheme,
-      darkTheme: darkTheme,
+      darkTheme: effectiveDark,
       themeMode: themeMode,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
@@ -174,3 +176,6 @@ class _LocalVaultAppState extends ConsumerState<LocalVaultApp>
 
 /// Theme mode state.
 final themeModeProvider = StateProvider<ThemeMode>((_) => ThemeMode.system);
+
+/// AMOLED black mode toggle.
+final amoledProvider = StateProvider<bool>((_) => false);
