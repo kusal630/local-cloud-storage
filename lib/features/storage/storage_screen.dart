@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/file_service.dart';
 import 'package:localvault/data/models/storage_status.dart';
@@ -60,6 +61,23 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                       child: ListView(
                         padding: const EdgeInsets.all(16),
                         children: [
+                          // Entry point to the v2.4.0 pooled cloud (§5).
+                          Card(
+                            child: ListTile(
+                              leading: Icon(Icons.cloud_outlined,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .primary),
+                              title: const Text('Pooled cloud'),
+                              subtitle: const Text(
+                                  'Contribute free space from several devices'),
+                              trailing:
+                                  const Icon(Icons.chevron_right_rounded),
+                              onTap: () =>
+                                  context.push('/client/storage/pool'),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
                           if (_status!.usedFraction >= 0.9)
                             Card(
                               color: Theme.of(context)

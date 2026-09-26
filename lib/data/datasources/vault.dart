@@ -18,6 +18,7 @@ import '../models/storage_status.dart';
 import '../models/vault_file.dart';
 import '../repositories/blob_repository.dart';
 import '../repositories/comment_repository.dart';
+import '../repositories/contributor_repository.dart';
 import '../repositories/device_repository.dart';
 import '../repositories/file_repository.dart';
 import '../repositories/settings_repository.dart';
@@ -41,6 +42,7 @@ class Vault {
     required this.audit,
     required this.shares,
     required this.comments,
+    required this.contributors,
   });
 
   factory Vault.from({
@@ -59,6 +61,7 @@ class Vault {
       audit: AuditRepository(database),
       shares: ShareRepository(database),
       comments: CommentRepository(database),
+      contributors: ContributorRepository(database),
     );
   }
 
@@ -73,6 +76,10 @@ class Vault {
   final AuditRepository audit;
   final ShareRepository shares;
   final CommentRepository comments;
+
+  /// Pooled data cloud (v2.4.0): contributor registry, quota reservations,
+  /// replica records, replay nonces and wrapped pairing secrets.
+  final ContributorRepository contributors;
 
   Directory get blobsDir =>
       Directory(p.join(vaultDir.path, AppConstants.blobsDirName));

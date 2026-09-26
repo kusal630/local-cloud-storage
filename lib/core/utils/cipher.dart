@@ -97,13 +97,15 @@ abstract class Cipher {
         nonce: salt,
       );
       final actual = await hash.extractBytes();
-      return _constantTimeEquals(actual, expected);
+      return constantTimeEquals(actual, expected);
     } on FormatException {
       return false;
     }
   }
 
-  static bool _constantTimeEquals(List<int> a, List<int> b) {
+  /// Byte-wise equality that runs in constant time (no early exit), so
+  /// comparisons of secrets and MACs do not leak matching-prefix length.
+  static bool constantTimeEquals(List<int> a, List<int> b) {
     if (a.length != b.length) return false;
     var diff = 0;
     for (var i = 0; i < a.length; i++) {

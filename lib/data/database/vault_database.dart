@@ -177,6 +177,80 @@ class VaultDatabase {
         ON comments(file_id, created_at DESC);
     ''');
 
+    // --- v2.4.0 pooled data cloud (RESEARCH/CONSULT.md §1-§5) -------------
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS contributors (
+        id                TEXT PRIMARY KEY,
+        device_id         TEXT NOT NULL,
+        name              TEXT NOT NULL DEFAULT '',
+        status            TEXT NOT NULL DEFAULT 'ALIVE'
+                          CHECK (status IN ('ALIVE','SUSPECT','DEAD','REVOKED','LEFT')),
+        quota_bytes       INTEGER NOT NULL DEFAULT 0,
+        used_bytes        INTEGER NOT NULL DEFAULT 0,
+        free_bytes        INTEGER NOT NULL DEFAULT 0,
+        token_hash        TEXT,
+        scope             TEXT,
+        token_expires_at  INTEGER,
+        last_report_seq   INTEGER NOT NULL DEFAULT 0,
+        last_heartbeat_at INTEGER NOT NULL DEFAULT 0,
+        created_at        INTEGER NOT NULL,
+        revoked_at        INTEGER
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_contributors_status
+        ON contributors(status);
+    ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS reservations (
+        idempotency_key TEXT NOT NULL,        -- client-generated, one per upload
+        chunk_id        TEXT NOT NULL,
+        contributor_id  TEXT NOT NULL,
+        bytes           INTEGER NOT NULL,
+        state           TEXT NOT NULL DEFAULT 'RESERVED'
+                        CHECK (state IN ('RESERVED','COMMITTED','ROLLED_BACK')),
+        created_at      INTEGER NOT NULL,
+        expires_at      INTEGER NOT NULL,
+        PRIMARY KEY (idempotency_key, contributor_id)
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_res_open
+        ON reservations(contributor_id, state, expires_at);
+    ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS chunk_replicas (
+        chunk_id      TEXT NOT NULL,
+        contributor_id TEXT NOT NULL,
+        state         TEXT NOT NULL DEFAULT 'STORING'
+                      CHECK (state IN ('STORING','STORED','DEGRADED','DELETED','CORRUPT')),
+        sha256        TEXT NOT NULL,
+        bytes         INTEGER NOT NULL,
+        updated_at    INTEGER,
+        PRIMARY KEY (chunk_id, contributor_id)
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_replicas_contributor
+        ON chunk_replicas(contributor_id, state);
+    ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS nonces (
+        nonce TEXT PRIMARY KEY,
+        ts    INTEGER NOT NULL
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_nonces_ts ON nonces(ts);
+    ''');
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS contributor_secrets (
+        contributor_id TEXT PRIMARY KEY,
+        wrapped        BLOB NOT NULL,   -- AES-256-GCM(pairing secret), never plaintext
+        wrap_nonce     BLOB NOT NULL    -- fresh 12-byte nonce per wrap
+      ) STRICT;
+    ''');
+
     // Additive column migrations for pre-existing vaults.
     _ensureColumn('files', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
     _ensureColumn('files', 'last_opened_at', 'INTEGER');

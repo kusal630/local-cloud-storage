@@ -11,6 +11,7 @@ import '../features/host_dashboard/host_dashboard_screen.dart';
 import '../features/host_setup/host_setup_screen.dart';
 import '../features/preview/preview_screen.dart';
 import '../features/privacy/privacy_screen.dart';
+import '../features/pool/pool_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/sharing/shared_links_screen.dart';
 import '../features/storage/storage_screen.dart';
@@ -69,6 +70,14 @@ final routerProvider = Provider<GoRouter>((ref) {
             GoRoute(
               path: '/client/storage',
               builder: (context, state) => const StorageScreen(),
+              routes: [
+                // Pooled cloud — pushed inside the Storage branch so the
+                // 5-tab NavigationBar stays visible (DESIGN §5).
+                GoRoute(
+                  path: 'pool',
+                  builder: (context, state) => const PoolScreen(),
+                ),
+              ],
             ),
           ]),
           StatefulShellBranch(routes: [

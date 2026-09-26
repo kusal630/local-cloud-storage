@@ -14,6 +14,8 @@
 2026-09-19 | done: v2.1.0 offline & sync wave: sync status, offline manager, conflict resolver | next: v2.2.0 performance optimization wave
 2026-09-19 | done: v2.2.0 performance wave: image cache, request batcher, connection pool, memory optimizer | next: v2.3.0 final polish wave
 2026-09-19 | done: v2.3.0 final polish wave: onboarding tooltips, feature highlights, help center, FAQ | next: build and release APK
-2026-09-19 | done: v2.3.0 final release built and tagged | next: ALL DONE
+2026-09-19 | done: v2.3.0 final release built and tagged | next: v2.4.0 pooled storage wave
 
-ALL DONE
+2026-09-25 | mission: v2.4.0 Pooled Data Cloud — many devices contribute storage, UI shows ONE summed cloud | next: map server/quota layer
+
+2026-09-26 | done: POOL-DATA data layer — pool tables (contributors/reservations/chunk_replicas/nonces/contributor_secrets), contributor + reservation + replica + nonce + secret repositories, vault.contributors, unit tests (7) | next: pool server routes consuming vault.contributors
