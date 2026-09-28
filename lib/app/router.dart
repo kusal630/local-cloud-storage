@@ -1,8 +1,13 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'providers.dart';
+
+import '../core/utils/disk_space_compat.dart';
 
 import '../features/client_connect/client_connect_screen.dart';
 import '../features/devices/devices_screen.dart';
@@ -21,9 +26,19 @@ import '../features/welcome/welcome_screen.dart';
 
 final rootNavigatorKey = GlobalKey<NavigatorState>();
 
+/// Coarse device class reported to the pool registry — the contributors list
+/// picks its leading glyph from it, so a laptop must not arrive claiming to
+/// be a phone (DESIGN §10: prefer "device", and never lie about which).
+String _deviceKind() => (Platform.isAndroid || Platform.isIOS)
+    ? 'phone'
+    : 'laptop';
+
 final routerProvider = Provider<GoRouter>((ref) {
   // Auto-setup (Pi/kiosk) boots straight into the running dashboard.
   final autoHost = ref.watch(hostStateProvider);
+  // Pooled cloud: one service instance for the app (the router rebuilds only
+  // if its own dependencies do, which they do not).
+  final pool = ref.watch(poolServiceProvider);
   return GoRouter(
     navigatorKey: rootNavigatorKey,
     initialLocation: autoHost != null ? '/host/dashboard' : '/',
@@ -75,7 +90,38 @@ final routerProvider = Provider<GoRouter>((ref) {
                 // 5-tab NavigationBar stays visible (DESIGN §5).
                 GoRoute(
                   path: 'pool',
-                  builder: (context, state) => const PoolScreen(),
+                  builder: (context, state) => PoolScreen(
+                    // Real data, real actions — see FEATURES §5: every
+                    // button on this screen reaches the coordinator.
+                    fetchStatus: pool.fetchStatus,
+                    onRevoke: (contributor) => pool.revoke(contributor.id),
+                    onQuotaChanged: (contributor, quota) =>
+                        pool.setQuota(contributor.id, quota),
+                    onAddDevice: () => context.push('/client/devices'),
+                    // The agent owns registration, the node server and the
+                    // heartbeat loop; the screen only names the quota.
+                    onContribute: (quota) async {
+                      final agent =
+                          await ref.read(contributorAgentProvider.future);
+                      await agent.start(
+                        quotaBytes: quota,
+                        deviceKind: _deviceKind(),
+                      );
+                    },
+                    onStop: () async {
+                      final agent =
+                          await ref.read(contributorAgentProvider.future);
+                      await agent.stop();
+                    },
+                    // Probed from the documents directory — the same volume
+                    // the node will actually write to, so the slider's
+                    // maximum is real rather than merely available.
+                    freeSpaceOnThisDevice: () async {
+                      final docs = await getApplicationDocumentsDirectory();
+                      final space = await DiskSpaceCompat.getSpace(docs.path);
+                      return space?.free ?? 0;
+                    },
+                  ),
                 ),
               ],
             ),

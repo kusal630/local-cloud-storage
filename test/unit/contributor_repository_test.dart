@@ -73,8 +73,15 @@ void main() {
     repo.register(id: 'c2', deviceId: 'd2', name: 'Laptop', quotaBytes: 2000);
     expect(repo.poolTotals().totalQuota, 3000);
 
+    // Usage comes from a committed chunk, never from what a device claims.
+    repo.reserveChunk('r2', 'chY', 'c2', 500);
+    expect(repo.commitReservation('r2', 'c2', 'ab'), isTrue);
+    expect(repo.poolTotals().usedBytes, 500);
+    // A heartbeat reporting a completely different figure must NOT move it —
+    // it only fills in what the device believes it holds (D5).
     repo.heartbeat(
         contributorId: 'c2', reportSeq: 1, usedBytes: 500, freeBytes: 1500);
+    expect(repo.getById('c2').reportedUsedBytes, 500);
     expect(repo.poolTotals().usedBytes, 500);
 
     // SUSPECT stays in the total (dimmed in the UI, counted until DEAD).
@@ -112,9 +119,13 @@ void main() {
         reason: 'older seq is out of order');
 
     final c = repo.getById('c1');
-    expect(c.usedBytes, 500);
+    expect(c.reportedUsedBytes, 500,
+        reason: 'the report landed as a claim (D5)');
+    expect(c.usedBytes, 0,
+        reason: 'nothing has been committed, so the ledger owns zero');
     expect(c.lastReportSeq, 5);
-    expect(repo.poolTotals().usedBytes, 500);
+    expect(repo.poolTotals().usedBytes, 0);
+    expect(repo.poolTotals().freeBytes, 1000);
   });
 
   test('nonce insert rejects replays and the sweep frees expired rows', () {
@@ -134,6 +145,11 @@ void main() {
     expect(repo.listReplicasByContributor('c1').single.chunkId, 'chX');
     expect(repo.underReplicatedChunks(), ['chX'], reason: '1 of R=2 copies');
 
+    // The second copy only counts if it sits on a device that can actually
+    // serve it (D2).
+    expect(repo.underReplicatedChunks(), ['chX'],
+        reason: 'an unknown holder is not redundancy');
+    repo.register(id: 'c2', deviceId: 'd2', name: 'Laptop', quotaBytes: 1000);
     repo.upsertReplica('chX', 'c2', ReplicaState.stored, 'bb', 100);
     expect(repo.underReplicatedChunks(), isEmpty);
     expect(repo.getById('c1').usedBytes, 100);

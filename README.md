@@ -6,7 +6,9 @@
 LocalVault makes a folder, SSD, pen drive, SD card — or a whole Raspberry Pi —
 act like Dropbox, except the "cloud" is hardware you own. One device hosts
 (**Storage Node**); every other device connects as a **Client** to browse,
-upload, download, share, and back up.
+upload, download, share, and back up. From v2.4.0 several devices can also
+donate quota-capped disk space and appear as a single pooled drive (see
+[Pooled cloud](#pooled-cloud-v240)).
 
 ## 📱 Download
 
@@ -69,7 +71,25 @@ upload, download, share, and back up.
 - **LRU image cache** — 50MB cache with automatic eviction
 - **Help center** — searchable articles, FAQ accordion, contact support
 - **Fixed**: password login actually verifies now (a hex-decoder bug meant it
-  never accepted any password — pairing was unaffected)## What you can do with it
+  never accepted any password — pairing was unaffected)
+
+## What you can do with it (v2.4.0 pooled cloud wave)
+
+- **Pool several disks into one drive** — each device donates a quota-capped
+  slice of its own free space, the app shows the sum as a single pooled cloud
+- **Contribute this device** — one bottom sheet, slider capped at this
+  device's real free space (never a fabricated number)
+- **Health at a glance** — one donut ring over the whole pool plus a ZFS-style
+  headline: `ONLINE` / `DEGRADED` / `AT RISK` / `OFFLINE`
+- **Contributors list** — see what each device gives and uses, resize a share,
+  or revoke a device and let its chunks re-replicate onto the rest
+- **Replication, not luck** — every chunk is written to R=2 copies picked by
+  weighted rendezvous hashing; the coordinator resolves every read and repairs
+  missing copies in the background
+- **Honest reads** — a file whose slots are missing or unreadable is reported
+  incomplete rather than returned short
+
+## What you can do with it
 
 | Use | How |
 |---|---|
@@ -80,6 +100,7 @@ upload, download, share, and back up.
 | **Version safety** | Re-uploading a file archives the old content; restore any version from Preview |
 | **Scripts & automation** | Host Dashboard → New API token gives a long-lived token for `curl`/cron jobs |
 | **Offline media** | Host on a laptop on a trip; phones stream/download over the hotspot, no internet needed |
+| **Pool several disks** | Storage tab → **Pooled cloud** → **Contribute this device**, then run the same step on every device you want in the pool |
 
 ## Quick start (2 minutes)
 
@@ -138,6 +159,50 @@ VPN, port-forward the server port to the node on your router. Mobile networks
 use carrier NAT, so inbound connections from the raw internet need that
 forward — the app never pretends otherwise.
 
+## Pooled cloud (v2.4.0)
+
+Several devices each contribute a quota-capped slice of their own free disk,
+and the app presents the result as one pooled drive. The device that already
+hosts the vault becomes the **coordinator** — it keeps the ledger in SQLite,
+chooses where every chunk lives and resolves every read — while each donating
+device runs a **contributor node** that stores opaque encrypted chunks.
+
+**How to use it**
+
+1. Storage tab → **Pooled cloud**
+2. **Contribute this device** → set the share on the slider → **Contribute**.
+   The slider's maximum is this device's real free space, probed from the same
+   directory the node will write to. This device then starts its node and
+   registers with the coordinator, reporting usage on a 60-second heartbeat.
+3. **Add device** pairs a second device the usual way; repeat step 2 from that
+   device's own Storage tab to fold its space into the pool.
+4. Manage it from the contributors list: resize anyone's share, or revoke a
+   device and its stored chunks re-replicate onto the rest of the pool.
+
+**How it is laid out**
+
+- Placement is **R=2** replication chosen by weighted rendezvous hashing, so
+  each chunk lands on two different contributors and a lost copy is rebuilt
+  from the survivor. R=2 is chosen for pools of roughly 2–5 devices.
+- The coordinator's ledger (`contributors`, `pool_chunks`, `pool_files`,
+  `chunk_replicas`, `reservations`, …) lives in the vault's `db.sqlite`; a
+  contributor only ever sees a 64-hex chunk id and ciphertext, never a file
+  name.
+- The screen has five shapes: empty pool, healthy, degraded (a device offline),
+  quota exceeded, and joining — plus a contributors list with revoke/resize.
+
+**Configuration**
+
+- A contributor node serves plain HTTP on the LAN by default. Give it a PEM
+  certificate and key pair (`certPath`/`keyPath` on `ContributorAgent`, passed
+  through to `PoolNodeServer.start`) and it serves HTTPS instead.
+- A pinned channel needs the node certificate's SHA-256 fingerprint as 64 hex
+  characters. Without one, every TLS call fails as `NO_FINGERPRINT` — the
+  identity cannot be verified, so register the certificate; with one that does
+  not match, it fails as `PIN_MISMATCH` — the identity is proved wrong, so
+  investigate before trusting that device. The pin governs `https` endpoints:
+  an endpoint registered as `http://` has no TLS and therefore no pin.
+
 ## Security model
 
 - **Encrypted by default**: every node serves **HTTPS** with a per-vault
@@ -157,6 +222,20 @@ forward — the app never pretends otherwise.
   and Argon2id passwords, ticketed content URLs, download counting, one-tap
   revoke. **API tokens**: long-lived, shown once, revocable like devices.
 - **App**: optional PIN lock; tokens in the platform keystore.
+- **Pooled cloud — chunk confidentiality**: chunks are **AES-256-GCM
+  encrypted** on the coordinating device before they leave it, and their
+  SHA-256 is **verified on write and on read**. A copy that fails verification
+  is marked corrupt and repair replaces it; a file with missing or unreadable
+  slots reports incomplete instead of returning short data.
+- **Pooled cloud — contributor credentials**: capability tokens are stored as
+  `SHA-256(token)` hashes only — the plaintext exists solely in the one-time
+  register response — and the coordinator's own copy is wrapped with the
+  master KEK, so no contributor secret sits in the database in the clear.
+- **Pooled cloud — transport**: the pool client's `HttpClient` is built with
+  the system trust store dropped (`lib/server/pool/pool_node_client.dart`),
+  so the certificate's SHA-256 fingerprint is the only thing that can accept
+  a contributor connection — a publicly-trusted certificate cannot bypass the
+  pin, and chunk payloads are already ciphertext at this layer.
 
 ## How it stores things
 
@@ -166,6 +245,11 @@ forward — the app never pretends otherwise.
   database — bytes are deduplicated by checksum + size.
 - Trash with configurable retention auto-purge, per-vault quota, per-type
   storage breakdown, and a host activity log are built in.
+- **Pool chunks** sit on the contributing devices as opaque encrypted blobs
+  under the node's own directory (this device's is `<documents>/pool_node/`),
+  addressed by a 64-hex chunk id and capped by each device's quota plus a
+  64 MiB free-disk watermark; the ledger that maps files to chunks lives only
+  on the coordinator.
 
 ## Troubleshooting
 
@@ -218,3 +302,8 @@ design language and `TEST_PLAN.md` for manual test cases.
   external dir and picker-chosen folders work everywhere.
 - True internet exposure needs your VPN/port-forward (see above); there is no
   relay server, by design.
+- The pooled cloud is new in v2.4.0 and designed for 2–5 devices: with a
+  single contributor every chunk has one copy of the two the replication
+  factor asks for, so the banner reports `AT RISK` until a second device
+  joins. Contributor nodes also default to plain HTTP on the LAN — supply a
+  PEM pair before relying on the certificate pin.

@@ -1,21 +1,24 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/semantics.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
+import '../../core/errors/app_exceptions.dart';
 import '../../core/haptics/haptic_feedback.dart';
+import '../../core/utils/disk_space_compat.dart';
 import '../../widgets/common.dart';
 import '../../widgets/pool_capacity_card.dart';
-import '../../widgets/pool_donut.dart';
+import 'contribute_sheet.dart';
 import 'pool_contributor_tile.dart';
+import 'pool_health_banner.dart';
 import 'pool_models.dart';
 
 /// Loader signature for the pool snapshot.
 ///
-/// The client-service slice (later) supplies
-/// `() => poolService.fetchStatus()`; until then the screen falls back to an
-/// empty snapshot so the UI ships independently of the data layer.
+/// The router supplies `poolService.fetchStatus`; until it does the screen
+/// falls back to an empty snapshot, which keeps the widget testable without
+/// a host.
 typedef PoolStatusLoader = Future<PoolStatus> Function();
 
 /// Pooled Data Cloud screen (RESEARCH/DESIGN.md §7) — all four states:
@@ -23,9 +26,43 @@ typedef PoolStatusLoader = Future<PoolStatus> Function();
 /// first-paint skeletons. Reached from the Storage tab and rendered inside
 /// the 5-tab NavigationBar shell.
 class PoolScreen extends StatefulWidget {
-  const PoolScreen({super.key, this.fetchStatus});
+  const PoolScreen({
+    super.key,
+    this.fetchStatus,
+    this.onRevoke,
+    this.onContribute,
+    this.onStop,
+    this.onAddDevice,
+    this.onQuotaChanged,
+    this.freeSpaceOnThisDevice,
+  });
 
   final PoolStatusLoader? fetchStatus;
+
+  /// Give the pool a copy of everything [contributor] holds. The host
+  /// returns immediately and re-replicates in the background, so the screen
+  /// only has to refresh.
+  final Future<void> Function(PoolContributor contributor)? onRevoke;
+
+  /// Add — or re-size — this device's share of the pool.
+  final Future<void> Function(int quotaBytes)? onContribute;
+
+  /// Take this device back out of the pool.
+  final Future<void> Function()? onStop;
+
+  /// Where "Add device" goes. Null hides nothing: the contributors card
+  /// falls back to inline feedback rather than offering a dead button.
+  final VoidCallback? onAddDevice;
+
+  /// Re-size someone's share without stopping them.
+  final Future<void> Function(PoolContributor contributor, int quotaBytes)?
+      onQuotaChanged;
+
+  /// Real free space on this device — the contribute slider's maximum.
+  /// Supplied by the router (which knows where the node's bytes will land);
+  /// when absent the screen probes the working directory itself. An unknown
+  /// answer must block the sheet, never become a made-up maximum.
+  final Future<int> Function()? freeSpaceOnThisDevice;
 
   @override
   State<PoolScreen> createState() => _PoolScreenState();
@@ -39,9 +76,10 @@ class _PoolScreenState extends State<PoolScreen> {
   Timer? _joinTimer;
   bool _joinTimedOut = false;
 
-  // State-entry guards: haptics/announcements fire once, never per rebuild.
+  // State-entry guard: the error haptic fires once per entry, never per
+  // rebuild. State *speech* belongs to PoolHealthBanner, which announces the
+  // health word and the exact sentence together.
   bool _wasFull = false;
-  bool _wasDegraded = false;
 
   bool _reduce = false;
   final _contributorsKey = GlobalKey();
@@ -96,16 +134,33 @@ class _PoolScreenState extends State<PoolScreen> {
     if (s.isFull && !_wasFull) AppHaptics.error();
     _wasFull = s.isFull;
 
-    // §10: live-region announcement for state changes.
-    if (s.hasOffline && !s.isEmpty && !_wasDegraded) {
-      final n = s.offlineCount;
-      SemanticsService.sendAnnouncement(
-        View.of(context),
-        'Pool degraded, $n ${n == 1 ? 'device' : 'devices'} offline',
-        TextDirection.ltr,
-      );
-    }
-    _wasDegraded = s.hasOffline && !s.isEmpty;
+  }
+
+  /// The pool's one headline word.
+  ///
+  /// The host's label wins whenever it sends one: it holds every figure in a
+  /// single transaction and knows things this screen cannot see — a chunk
+  /// down to one copy, a write the pool refused. The fallback below exists
+  /// only for a host that predates the field.
+  PoolHealth _health(PoolStatus s) {
+    final label = s.healthLabel;
+    if (label != null && label.isNotEmpty) return PoolHealth.fromName(label);
+    if (s.isEmpty) return PoolHealth.empty;
+    if (s.allOffline) return PoolHealth.offline;
+    if (s.degradedChunks > 0) return PoolHealth.atRisk;
+    if (s.hasOffline) return PoolHealth.degraded;
+    return PoolHealth.online;
+  }
+
+  /// The banner speaks only when it has something to say.
+  ///
+  /// An all-green pool already reports through the capacity card's health
+  /// pill, and an empty pool has its own copy inside that card (DESIGN §7A),
+  /// so a headline in either case would just repeat it a second time.
+  bool get _showBanner {
+    final s = _status;
+    if (s == null || s.isEmpty) return false;
+    return _health(s) != PoolHealth.online;
   }
 
   /// §7D: a join that takes >15s collapses the tile to error + Retry.
@@ -172,8 +227,11 @@ class _PoolScreenState extends State<PoolScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           if (s.isFull) _quotaExceededCard(s),
-          if (s.hasOffline) _degradedBanner(s),
-          PoolCapacityCard(status: s),
+          if (_showBanner) _healthBanner(s),
+          PoolCapacityCard(
+            status: s,
+            onContribute: _openContributeSheet,
+          ),
           if (!s.isEmpty) ...[
             const SizedBox(height: 16),
             PoolContributorsCard(
@@ -181,6 +239,13 @@ class _PoolScreenState extends State<PoolScreen> {
               contributors: s.contributors,
               joinTimedOut: _joinTimedOut,
               onRetryJoin: _retryJoin,
+              onAddDevice: widget.onAddDevice,
+              onQuotaChanged: widget.onQuotaChanged == null
+                  ? null
+                  : (c, q) => _refresh(() => widget.onQuotaChanged!(c, q)),
+              onRevoke: widget.onRevoke == null
+                  ? null
+                  : (c) => _refresh(() => widget.onRevoke!(c)),
             ),
           ],
           const SizedBox(height: 24),
@@ -237,78 +302,114 @@ class _PoolScreenState extends State<PoolScreen> {
   // -------------------------------------------------------------------------
   // §7B — degraded: banner above the donut; the ring + pill handle the rest.
   // -------------------------------------------------------------------------
-  Widget _degradedBanner(PoolStatus s) {
-    final scheme = Theme.of(context).colorScheme;
-    final brightness = Theme.of(context).brightness;
-    final tint = s.allOffline
-        ? (brightness == Brightness.dark
-            ? poolStatusError
-            : poolStatusErrorLight)
-        : (brightness == Brightness.dark
-            ? poolStatusDegraded
-            : poolStatusDegradedLight);
-    final line1 = s.allOffline
-        ? 'All ${s.contributorCount} devices are offline'
-        : '${s.offlineCount} of ${s.contributorCount} devices are offline';
-    final line2 = s.allOffline
-        ? 'Reads repair from replicas when a device returns.'
-        : '${formatPoolSize(s.offlineQuota)} temporarily unavailable';
-
-    return AnimatedSize(
-      duration:
-          _reduce ? Duration.zero : const Duration(milliseconds: 240),
-      curve: Curves.easeOutCubic,
-      child: Padding(
+  // -------------------------------------------------------------------------
+  // §7B — headline state banner: one health word plus one sentence that names
+  // exactly what is at stake, and a Review that jumps to the list.
+  // -------------------------------------------------------------------------
+  Widget _healthBanner(PoolStatus s) => Padding(
         padding: const EdgeInsets.only(bottom: 16),
-        child: TweenAnimationBuilder<double>(
-          tween: Tween<double>(begin: -12, end: 0),
-          duration:
-              _reduce ? Duration.zero : const Duration(milliseconds: 240),
-          curve: Curves.easeOutCubic,
-          builder: (context, dy, child) =>
-              Transform.translate(offset: Offset(0, dy), child: child),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Icon(Icons.wifi_off_rounded, color: tint),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(line1,
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleSmall
-                                ?.copyWith(fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 2),
-                        Text(
-                          line2,
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color:
-                                        scheme.onSurfaceVariant,
-                                  ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: _scrollToContributors,
-                    child: const Text('Review'),
-                  ),
-                ],
-              ),
-            ),
+        child: PoolHealthBanner(
+          health: _health(s),
+          pooledBytes: s.usedBytes,
+          totalDevices: s.contributorCount,
+          offlineDevices: s.offlineCount,
+          offlineBytes: s.offlineQuota,
+          atRiskFiles: s.degradedChunks,
+          onReview: _scrollToContributors,
+        ),
+      );
+
+  // -------------------------------------------------------------------------
+  // Actions. Every affordance on this screen either performs the real
+  // operation or is left off entirely — there is no button here that quietly
+  // does nothing.
+  // -------------------------------------------------------------------------
+
+  /// Runs [action] and reloads so the screen shows what the host actually
+  /// did. Failures the caller cannot handle are surfaced by name; failures
+  /// raised inside the contribute sheet are left for the sheet, which has a
+  /// fix-and-Retry message of its own and would otherwise be buried by a
+  /// snackbar.
+  Future<void> _refresh(Future<void> Function() action) async {
+    try {
+      await action();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_messageFor(e))));
+    }
+    if (mounted) await _load();
+  }
+
+  static String _messageFor(Object e) => e is AppException
+      ? e.message
+      : 'That did not work. Check that the pool host is reachable and try again.';
+
+  Future<int> _freeSpaceOnThisDevice() async {
+    final probe = widget.freeSpaceOnThisDevice;
+    if (probe != null) return probe();
+    // No caller-supplied probe: read the real disk. The slider must never
+    // offer space this device does not have, so "unknown" has to read as 0 —
+    // a number that blocks the sheet — rather than as a guess.
+    final space = await DiskSpaceCompat.getSpace(Directory.current.path);
+    return space?.free ?? 0;
+  }
+
+  /// Opens the single-decision contribute sheet (DESIGN §6).
+  Future<void> _openContributeSheet() async {
+    final s = _status;
+    if (s == null) return;
+    AppHaptics.light();
+
+    if (widget.onContribute == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pool service not connected yet.')),
+      );
+      return;
+    }
+
+    final free = await _freeSpaceOnThisDevice();
+    if (!mounted) return;
+    if (free <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "This device's free space could not be read, so there is "
+            'nothing it can offer the pool.',
           ),
         ),
+      );
+      return;
+    }
+
+    final index = s.contributors.indexWhere((c) => c.isThisDevice);
+    final me = index < 0 ? null : s.contributors[index];
+
+    await showContributeSheet(
+      context,
+      args: ContributeSheetArgs(
+        currentPoolBytes: s.usedBytes,
+        thisDeviceFreeBytes: free,
+        isContributing: me != null,
+        thisDeviceQuotaBytes: me?.quotaBytes ?? 0,
+        thisDeviceUsedBytes: me?.usedBytes,
+        thisDeviceSlotIndex: index < 0 ? null : index,
+        // Thrown errors are the sheet's to render — it owns the retry copy.
+        onContribute: (quota) async {
+          await widget.onContribute!(quota);
+          if (mounted) await _load();
+        },
+        onStop: () async {
+          final stop = widget.onStop;
+          if (stop == null) return;
+          await stop();
+          if (mounted) await _load();
+        },
       ),
     );
   }
 
-  // -------------------------------------------------------------------------
+
   // First paint — same shimmer skeleton language as SkeletonList.
   // -------------------------------------------------------------------------
   Widget _skeleton() {

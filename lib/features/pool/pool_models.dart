@@ -162,6 +162,12 @@ class PoolStatus {
     required this.usedBytes,
     this.contributors = const [],
     this.quotaExceeded = false,
+    this.hostAvailableQuota,
+    this.hostFreeBytes,
+    this.reservedBytes = 0,
+    this.healthLabel,
+    this.chunkCount = 0,
+    this.degradedChunks = 0,
   });
 
   /// Sum of quota over contributors the host still counts (ALIVE/SUSPECT).
@@ -175,6 +181,27 @@ class PoolStatus {
   /// Server flag: the pool rejected a write because it is full (mirrors the
   /// `usedFraction >= 0.9` threshold used by the storage screen).
   final bool quotaExceeded;
+
+  /// Host's own `available_quota` — consumed verbatim, never recomputed.
+  ///
+  /// Null only when talking to a host that predates the field, in which case
+  /// [availableQuota] falls back to the arithmetic below.
+  final int? hostAvailableQuota;
+
+  /// Host's own `free_bytes`, which is the only figure that already knows
+  /// about in-flight reservations.
+  final int? hostFreeBytes;
+
+  /// Quota reserved by writes that have not committed yet.
+  final int reservedBytes;
+
+  /// Host's headline word (`EMPTY` / `ONLINE` / `DEGRADED` / `AT RISK` /
+  /// `OFFLINE`), passed through for [PoolHealthBanner].
+  final String? healthLabel;
+
+  /// Chunks recorded for the whole pool, and how many are below R.
+  final int chunkCount;
+  final int degradedChunks;
 
   /// First-run / nobody contributing yet.
   factory PoolStatus.empty() => const PoolStatus(totalQuota: 0, usedBytes: 0);
@@ -190,6 +217,12 @@ class PoolStatus {
             if (e is Map<String, dynamic>) PoolContributor.fromJson(e),
       ],
       quotaExceeded: json['quota_exceeded'] as bool? ?? false,
+      hostAvailableQuota: (json['available_quota'] as num?)?.toInt(),
+      hostFreeBytes: (json['free_bytes'] as num?)?.toInt(),
+      reservedBytes: (json['reserved_bytes'] as num?)?.toInt() ?? 0,
+      healthLabel: json['health'] as String?,
+      chunkCount: (json['chunk_count'] as num?)?.toInt() ?? 0,
+      degradedChunks: (json['degraded_chunks'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -212,12 +245,28 @@ class PoolStatus {
       offline.fold<int>(0, (sum, c) => sum + c.quotaBytes);
 
   /// Capacity a user can actually write to right now.
+  ///
+  /// The host's figure wins whenever it is present. `total_quota` already
+  /// excludes every device the host stopped counting, so subtracting an
+  /// offline device's quota *again* here counts the same loss twice: two
+  /// 10 GB devices alive plus one that left showed as 10 GB where the pool
+  /// really holds 20 GB. The arithmetic below exists only for a host that
+  /// does not send the field yet.
   int get availableQuota {
+    final host = hostAvailableQuota;
+    if (host != null) return host < 0 ? 0 : host;
     if (contributors.isEmpty) return 0;
     return (totalQuota - offlineQuota).clamp(0, 1 << 62);
   }
 
-  int get freeBytes => (totalQuota - usedBytes).clamp(0, 1 << 62);
+  /// Bytes not yet written. Reservations are neither free nor used, so only
+  /// the host — which holds both numbers in one transaction — can answer
+  /// this honestly.
+  int get freeBytes {
+    final host = hostFreeBytes;
+    if (host != null) return host < 0 ? 0 : host;
+    return (totalQuota - usedBytes).clamp(0, 1 << 62);
+  }
 
   double get usedFraction =>
       totalQuota <= 0 ? 0.0 : (usedBytes / totalQuota).clamp(0.0, 1.0);
@@ -250,6 +299,12 @@ class PoolStatus {
       usedBytes: usedBytes ?? this.usedBytes,
       contributors: contributors ?? this.contributors,
       quotaExceeded: quotaExceeded ?? this.quotaExceeded,
+      hostAvailableQuota: hostAvailableQuota,
+      hostFreeBytes: hostFreeBytes,
+      reservedBytes: reservedBytes,
+      healthLabel: healthLabel,
+      chunkCount: chunkCount,
+      degradedChunks: degradedChunks,
     );
   }
 }

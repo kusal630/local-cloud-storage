@@ -168,6 +168,43 @@ class ReservationRepository {
     });
   }
 
+  /// Adopts bytes that are already on the node when the reservation row has
+  /// been swept away (the crash-between-commit-and-record window, D6).
+  ///
+  /// The replica row and `used_bytes` move together, and the delta is zero
+  /// when that copy was already counted — so a retry can never inflate the
+  /// pool's usage figure.
+  bool adoptOrphanReplica({
+    required String chunkId,
+    required String contributorId,
+    required String sha256,
+    required int bytes,
+  }) {
+    return _db.withTransaction(() {
+      final existing = _db.raw.select(
+        'SELECT state FROM chunk_replicas '
+        'WHERE chunk_id = ? AND contributor_id = ?',
+        [chunkId, contributorId],
+      );
+      final alreadyCounted = existing.isNotEmpty &&
+          existing.first['state'] == ReplicaState.stored.dbValue;
+      _replicas.upsert(
+        chunkId,
+        contributorId,
+        ReplicaState.stored,
+        sha256,
+        bytes,
+      );
+      if (!alreadyCounted) {
+        _db.raw.execute(
+          'UPDATE contributors SET used_bytes = used_bytes + ? WHERE id = ?',
+          [bytes, contributorId],
+        );
+      }
+      return true;
+    });
+  }
+
   /// Releases a quota hold on write failure/timeout. Returns false when the
   /// reservation was not open.
   bool rollbackReservation(String idempotencyKey, String contributorId) {

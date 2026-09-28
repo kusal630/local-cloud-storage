@@ -56,19 +56,68 @@ class ReplicaRepository {
     return rows.map(_fromRow).toList();
   }
 
-  /// Chunk ids holding fewer than [targetReplicas] `STORED` copies — the
+  /// Chunk ids holding fewer than [targetReplicas] **usable** copies — the
   /// re-replication work queue.
+  ///
+  /// "Usable" is the whole point (D2): a copy on a `REVOKED`, `LEFT` or `DEAD`
+  /// device still says `STORED`, but nobody can read it. Counting it would
+  /// empty the queue exactly when repair matters most — right after a revoke,
+  /// where the bytes were wiped and the surviving copy needs a sibling. A
+  /// holder missing entirely (row gone) counts as unusable too.
   List<String> underReplicated({int targetReplicas = 2}) {
     final rows = _db.raw.select(
       '''
-      SELECT chunk_id FROM chunk_replicas
-      WHERE state IN ('STORED','DEGRADED')
-      GROUP BY chunk_id
-      HAVING SUM(CASE WHEN state = 'STORED' THEN 1 ELSE 0 END) < ?
+      SELECT cr.chunk_id FROM chunk_replicas cr
+      LEFT JOIN contributors c ON c.id = cr.contributor_id
+      WHERE cr.state IN ('STORED','DEGRADED')
+      GROUP BY cr.chunk_id
+      HAVING SUM(CASE WHEN cr.state = 'STORED'
+                       AND c.status IN ('ALIVE','SUSPECT')
+                      THEN 1 ELSE 0 END) < ?
       ''',
       [targetReplicas],
     );
     return rows.map((r) => r['chunk_id'] as String).toList();
+  }
+
+  /// Deletes a copy for real: the node confirmed the bytes are gone (or the
+  /// holder left the pool), so the ledger drops the row and gives the quota
+  /// back.
+  ///
+  /// Replica row + `used_bytes` move together in one transaction, and only a
+  /// row that was actually `STORED` returns quota — releasing an already
+  /// released copy cannot shrink usage twice.
+  bool releaseReplica(String chunkId, String contributorId) {
+    return _db.withTransaction(() {
+      final rows = _db.raw.select(
+        'SELECT state, bytes FROM chunk_replicas '
+        'WHERE chunk_id = ? AND contributor_id = ?',
+        [chunkId, contributorId],
+      );
+      if (rows.isEmpty) return false;
+      final state = rows.first['state'] as String;
+      if (state == ReplicaState.deleted.dbValue) return false;
+      final bytes = rows.first['bytes'] as int;
+      _db.raw.execute(
+        "UPDATE chunk_replicas SET state = ?, updated_at = ? "
+        'WHERE chunk_id = ? AND contributor_id = ?',
+        [
+          ReplicaState.deleted.dbValue,
+          DateTime.now().millisecondsSinceEpoch,
+          chunkId,
+          contributorId,
+        ],
+      );
+      // Any copy that was not already released was paid for when it was
+      // committed — including one that has since been quarantined `CORRUPT`,
+      // whose bytes are still sitting on that device until it is deleted.
+      _db.raw.execute(
+        'UPDATE contributors SET used_bytes = MAX(0, used_bytes - ?) '
+        'WHERE id = ?',
+        [bytes, contributorId],
+      );
+      return true;
+    });
   }
 
   ChunkReplica _fromRow(Row row) => ChunkReplica(

@@ -46,4 +46,44 @@ class ContributorSecretRepository {
       [contributorId],
     );
   }
+
+  // --- Node capability tokens (CONSULT §1) -------------------------------
+  //
+  // The coordinator must be able to *call* a contributor's storage node, so
+  // it keeps the token it issued — but only as master-KEK-wrapped ciphertext
+  // with AAD `node-token:<id>`, which is why this lives in its own table and
+  // can never be confused with a wrapped pairing secret (§5 domain
+  // separation). The SHA-256 of the same token is what `contributors.
+  // token_hash` checks when the contributor calls *us*.
+
+  /// Stores (or replaces) the wrapped node token for [contributorId].
+  void putNodeToken(String contributorId, Uint8List wrapped) {
+    _db.raw.execute(
+      '''
+      INSERT INTO contributor_node_tokens (contributor_id, wrapped)
+      VALUES (?, ?)
+      ON CONFLICT(contributor_id) DO UPDATE SET
+        wrapped = excluded.wrapped
+      ''',
+      [contributorId, wrapped],
+    );
+  }
+
+  /// Returns the wrapped node token, or null when never issued.
+  Uint8List? getNodeToken(String contributorId) {
+    final rows = _db.raw.select(
+      'SELECT wrapped FROM contributor_node_tokens WHERE contributor_id = ?',
+      [contributorId],
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['wrapped'] as Uint8List;
+  }
+
+  /// Drops the wrapped node token (revoke / leave).
+  void deleteNodeToken(String contributorId) {
+    _db.raw.execute(
+      'DELETE FROM contributor_node_tokens WHERE contributor_id = ?',
+      [contributorId],
+    );
+  }
 }

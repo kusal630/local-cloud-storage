@@ -25,7 +25,9 @@ import '../../data/models/vault_file.dart';
 import '../../data/repositories/file_repository.dart';
 import '../middleware/api_responses.dart';
 import '../middleware/auth_middleware.dart';
+import '../pool/pool_coordinator.dart';
 import '../services/pairing_service.dart';
+import 'pool_router.dart';
 import '../services/token_service.dart';
 import 'webdav_router.dart';
 
@@ -1494,8 +1496,16 @@ Handler buildApiHandler({
 }) {
   final handlers = ApiHandlers(vault, tokenService, pairingStore);
 
+  // v2.4.0 pooled data cloud: one coordinator per server isolate, shared by
+  // every request (its placement decisions and epoch must be consistent).
+  final poolCoordinator = PoolCoordinator(vault: vault);
+  final pool = PoolApiHandlers(vault: vault, coordinator: poolCoordinator);
+
   final publicRouter = Router()
     ..get('/health', handlers.health)
+    // Self-authenticating with the contributor capability token: a
+    // background contributor agent reports without holding a user session.
+    ..post('/api/v1/pool/heartbeat', pool.heartbeat)
     ..post('/api/v1/setup', handlers.setup)
     ..post('/api/v1/auth/login', handlers.login)
     ..post('/api/v1/auth/refresh', handlers.refresh)
@@ -1555,6 +1565,8 @@ Handler buildApiHandler({
     ..post('/api/v1/shares', handlers.createShare)
     ..get('/api/v1/shares', handlers.listShares)
     ..delete('/api/v1/shares/<prefix>', handlers.deleteShare);
+
+  pool.register(protectedRouter);
 
   final publicPipeline =
       const Pipeline().addMiddleware(errorHandler()).addHandler(publicRouter.call);

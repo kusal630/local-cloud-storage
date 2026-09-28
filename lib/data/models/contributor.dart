@@ -43,6 +43,11 @@ class Contributor {
     this.scope,
     this.tokenExpiresAt,
     this.revokedAt,
+    this.endpoint,
+    this.fingerprint,
+    this.deviceKind = 'phone',
+    this.lastError,
+    this.reportedUsedBytes = 0,
   });
 
   final String id;
@@ -53,8 +58,17 @@ class Contributor {
   /// Quota cap this contributor allows the pool to place on it.
   final int quotaBytes;
 
-  /// Bytes the host has accounted as stored (commit- or heartbeat-reported).
+  /// Bytes the host's ledger has accounted as stored.
+  ///
+  /// Owned by the host: only a chunk commit (or the matching rollback/GC)
+  /// changes it, so pool totals can never be talked up by a heartbeat.
   final int usedBytes;
+
+  /// What the contributor *claims* is on its own disk, from its heartbeat.
+  /// Diagnostic only — a sustained gap between this and [usedBytes] means a
+  /// node is storing bytes the pool does not know about (or vice versa) and
+  /// is surfaced as such instead of being averaged into the headline.
+  final int reportedUsedBytes;
 
   /// Last heartbeat-reported free space (weighting only, never admission).
   final int freeBytes;
@@ -68,9 +82,27 @@ class Contributor {
   final DateTime? tokenExpiresAt;
   final DateTime? revokedAt;
 
+  /// Base URL of this contributor's storage node (`https://192.168.1.5:5321`).
+  final String? endpoint;
+
+  /// Pinned SHA-256 fingerprint of the node's TLS certificate.
+  final String? fingerprint;
+
+  /// Coarse device class for the UI glyph: `phone` / `laptop` / `tablet` /
+  /// `server`.
+  final String deviceKind;
+
+  /// Last transport/verification error seen for this contributor — surfaced
+  /// as the row's honest "why" instead of a silent stale total.
+  final String? lastError;
+
   /// True while the contributor counts toward pool totals (§4).
   bool get countsTowardPool =>
       status == ContributorStatus.alive || status == ContributorStatus.suspect;
+
+  /// True when the coordinator has everything it needs to talk to the node.
+  bool get isReachable =>
+      (endpoint ?? '').isNotEmpty && status != ContributorStatus.revoked;
 
   /// Maps a raw `contributors` row to a [Contributor].
   factory Contributor.fromRow(Row row) => Contributor(
@@ -80,6 +112,7 @@ class Contributor {
         status: ContributorStatus.fromDb(row['status'] as String),
         quotaBytes: row['quota_bytes'] as int,
         usedBytes: row['used_bytes'] as int,
+        reportedUsedBytes: row['reported_used_bytes'] as int? ?? 0,
         freeBytes: row['free_bytes'] as int,
         lastReportSeq: row['last_report_seq'] as int,
         lastHeartbeatAt: _dt(row['last_heartbeat_at'])!,
@@ -88,6 +121,10 @@ class Contributor {
         scope: row['scope'] as String?,
         tokenExpiresAt: _dt(row['token_expires_at']),
         revokedAt: _dt(row['revoked_at']),
+        endpoint: row['endpoint'] as String?,
+        fingerprint: row['fingerprint'] as String?,
+        deviceKind: (row['device_kind'] as String?) ?? 'phone',
+        lastError: row['last_error'] as String?,
       );
 
   static DateTime? _dt(Object? epochMs) => epochMs == null
@@ -179,6 +216,76 @@ class ChunkReplica {
   final String sha256;
   final int bytes;
   final DateTime? updatedAt;
+}
+
+/// One row of the host-side chunk manifest (`pool_chunks`).
+///
+/// Two different hashes, deliberately (CONSULT §5, §6 control 1):
+/// * [contentSha256] — SHA-256 of the **plaintext**: the content id and the
+///   value re-checked after decryption. Never supplied by a contributor.
+/// * [cipherSha256] — SHA-256 of the **stored blob**, computed by the host
+///   from bytes it encrypted itself and recorded here at commit time, so a
+///   read can detect bit-rot or tampering before trusting the ciphertext.
+class PoolChunk {
+  const PoolChunk({
+    required this.chunkId,
+    required this.seq,
+    required this.bytes,
+    required this.contentSha256,
+    required this.cipherSha256,
+    required this.replication,
+    required this.createdAt,
+    this.fileId,
+  });
+
+  final String chunkId;
+  final String? fileId;
+  final int seq;
+  final int bytes;
+  final String contentSha256;
+  final String cipherSha256;
+  final int replication;
+  final DateTime createdAt;
+
+  factory PoolChunk.fromRow(Row row) => PoolChunk(
+        chunkId: row['chunk_id'] as String,
+        fileId: row['file_id'] as String?,
+        seq: row['seq'] as int,
+        bytes: row['bytes'] as int,
+        contentSha256: row['content_sha256'] as String,
+        cipherSha256: row['cipher_sha256'] as String,
+        replication: row['replication'] as int,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
+      );
+}
+
+/// What a protected file is supposed to consist of.
+///
+/// `pool_chunks` records what *landed*; this records what was *asked for*.
+/// Comparing the two is how a reader knows a file is whole instead of
+/// assuming that every row it can see is every row there is.
+class PoolFileMeta {
+  const PoolFileMeta({
+    required this.fileId,
+    required this.chunkCount,
+    required this.byteLength,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String fileId;
+  final int chunkCount;
+  final int byteLength;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  factory PoolFileMeta.fromRow(Row row) => PoolFileMeta(
+        fileId: row['file_id'] as String,
+        chunkCount: row['chunk_count'] as int,
+        byteLength: row['byte_length'] as int,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
+        updatedAt: DateTime.fromMillisecondsSinceEpoch(row['updated_at'] as int),
+      );
 }
 
 /// Derived pool capacity snapshot (§4 — never stored, always summed).

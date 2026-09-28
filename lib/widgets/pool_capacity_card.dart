@@ -130,6 +130,13 @@ class _PoolCapacityCardState extends State<PoolCapacityCard> {
             used: s.usedBytes,
             free: s.freeBytes,
           ),
+          // §5 fixes the stat row at three, so in-flight bytes get a quiet
+          // sub-line instead of a fourth KPI (§11), and only while something
+          // is actually in flight — the card's shape is unchanged otherwise.
+          if (s.reservedBytes > 0) ...[
+            const SizedBox(height: 8),
+            _ReservedLine(bytes: s.reservedBytes),
+          ],
           if (s.isEmpty) ...[
             const SizedBox(height: 8),
             EmptyState(
@@ -267,6 +274,41 @@ class _PoolStats extends StatelessWidget {
         stat('Used', formatPoolSize(used)),
         stat('Free', formatPoolSize(free)),
       ],
+    );
+  }
+}
+
+/// Quiet sub-line under the three hero stats: quota claimed by a write that
+/// has not committed yet — neither free nor used, so a card that showed only
+/// Used + Free would silently lose it from both.
+///
+/// It renders only when something is genuinely in flight, which leaves §5's
+/// three-stat row untouched for the common case. The meaning rides in a
+/// tooltip because "reserved" on its own reads as space held back, not as an
+/// upload mid-flight; the figure is never shown bare (§10).
+class _ReservedLine extends StatelessWidget {
+  const _ReservedLine({required this.bytes});
+
+  final int bytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final muted = scheme.onSurfaceVariant;
+    return Tooltip(
+      message: 'Claimed by an upload that has not finished yet. It becomes '
+          'used when the write commits, or free again if it fails.',
+      child: Row(
+        children: [
+          // Shape + word, never hue alone (§10).
+          Icon(Icons.schedule_rounded, size: 13, color: muted),
+          const SizedBox(width: 6),
+          Text(
+            '${formatPoolSize(bytes)} reserved',
+            style: poolMonoDigits.copyWith(fontSize: 12, color: muted),
+          ),
+        ],
+      ),
     );
   }
 }

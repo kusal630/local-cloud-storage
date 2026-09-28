@@ -250,6 +250,57 @@ class VaultDatabase {
         wrap_nonce     BLOB NOT NULL    -- fresh 12-byte nonce per wrap
       ) STRICT;
     ''');
+    // Master-KEK-wrapped capability tokens the coordinator presents when it
+    // calls a contributor's storage node. SQLite holds ciphertext only —
+    // the plaintext exists solely in the registration response (CONSULT §1).
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS contributor_node_tokens (
+        contributor_id TEXT PRIMARY KEY,
+        wrapped        BLOB NOT NULL    -- AES-256-GCM(token), AAD = node-token:<id>
+      ) STRICT;
+    ''');
+    // Host-side chunk manifest: `content_sha256` is the plaintext hash (the
+    // dedup/content id, verified after decryption) while
+    // `chunk_replicas.sha256` is the ciphertext hash of the stored blob
+    // (verified on every read) — CONSULT §5 + §6 control 1.
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS pool_chunks (
+        chunk_id        TEXT PRIMARY KEY,
+        file_id         TEXT,
+        seq             INTEGER NOT NULL DEFAULT 0,
+        bytes           INTEGER NOT NULL,
+        content_sha256  TEXT NOT NULL,
+        cipher_sha256   TEXT NOT NULL,
+        replication     INTEGER NOT NULL DEFAULT 2,
+        created_at      INTEGER NOT NULL
+      ) STRICT;
+    ''');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_pool_chunks_file
+        ON pool_chunks(file_id, seq);
+    ''');
+    // How many slots a protected file is SUPPOSED to have.
+    //
+    // Without it a reader can only see the rows that landed, so a write that
+    // failed on its LAST chunk would reassemble a truncated file that looks
+    // perfectly complete — the one failure a storage system must never have.
+    // The row is written before the first chunk, so "expected 3, have 2" is
+    // knowable even if the writer died mid-way.
+    _db.execute('''
+      CREATE TABLE IF NOT EXISTS pool_files (
+        file_id       TEXT PRIMARY KEY,
+        chunk_count   INTEGER NOT NULL,
+        byte_length   INTEGER NOT NULL,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      ) STRICT;
+    ''');
+
+    // Marks a chunk that used to belong to a file that shrank. It stays in
+    // the ledger (its bytes are still on some device until that device
+    // confirms the delete) but is no longer part of any reassembly, and the
+    // maintenance sweep keeps retrying the delete until it is gone.
+    _ensureColumn('pool_chunks', 'detached_at', 'INTEGER');
 
     // Additive column migrations for pre-existing vaults.
     _ensureColumn('files', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
@@ -259,6 +310,19 @@ class VaultDatabase {
     _ensureColumn('shares', 'mode', "TEXT NOT NULL DEFAULT 'download'");
     _ensureColumn('shares', 'target_folder_id', 'TEXT');
     _ensureColumn('shares', 'max_downloads', 'INTEGER');
+    // v2.4.0 pooled cloud: where the contributor's storage node lives, what
+    // class of device it is, and the SHA-256 fingerprint of its TLS
+    // certificate (CONSULT §1: all pool traffic rides a pinned channel).
+    _ensureColumn('contributors', 'endpoint', 'TEXT');
+    _ensureColumn('contributors', 'fingerprint', 'TEXT');
+    _ensureColumn('contributors', 'device_kind', "TEXT NOT NULL DEFAULT 'phone'");
+    _ensureColumn('contributors', 'last_error', 'TEXT');
+    // D5: the node's own view of what sits on its disk. Kept SEPARATE from
+    // `used_bytes`, which is ledger-owned (only a chunk commit may change
+    // it) — a heartbeat is a claim, not an accounting entry, and the two
+    // disagreeing is a signal worth surfacing, not a number to average.
+    _ensureColumn('contributors', 'reported_used_bytes',
+        'INTEGER NOT NULL DEFAULT 0');
 
     // Seed the virtual root folder.
     final roots = _db.select(
@@ -283,6 +347,28 @@ class VaultDatabase {
     final exists = info.any((r) => (r['name'] as String) == column);
     if (!exists) {
       _db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
+    }
+  }
+
+  /// Runs [action] inside a **read** transaction, rolling back on error.
+  ///
+  /// Deliberately `BEGIN`, never `BEGIN IMMEDIATE`: IMMEDIATE takes SQLite's
+  /// write lock, which a pool status poll would then hold against every chunk
+  /// commit and heartbeat for as long as the query takes (up to
+  /// `busy_timeout`). Under WAL a read transaction takes only a snapshot, so
+  /// writers continue untouched while the reader still sees every figure
+  /// come from one consistent view.
+  T withReadTransaction<T>(T Function() action) {
+    _db.execute('BEGIN');
+    try {
+      final result = action();
+      _db.execute('COMMIT');
+      return result;
+    } catch (e) {
+      try {
+        _db.execute('ROLLBACK');
+      } catch (_) {}
+      rethrow;
     }
   }
 

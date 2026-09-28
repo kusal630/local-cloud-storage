@@ -413,7 +413,11 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
   late final AnimationController _focusCtrl; // 180ms easeOut segment focus
   late final AnimationController _haloCtrl; // 400ms easeOut quota halo
   AnimationController? _placeholderCtrl; // rotating join highlight
-  Tween<int>? _countTween;
+  // `IntTween`, never `Tween<int>`: Tween.lerp does dynamic arithmetic, so an
+  // int begin/end yields a double and the `as int` cast throws on every frame
+  // between t=0 and t=1. Tween.transform only short-circuits at the endpoints,
+  // which is why a test that pumps straight past the duration never sees it.
+  IntTween? _countTween;
   int _displayedBytes = 0;
   int? _prevFocus;
   bool _reduce = false;
@@ -491,7 +495,7 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
         return;
       }
     }
-    _countTween = Tween<int>(begin: initial ? 0 : _displayedBytes, end: target);
+    _countTween = IntTween(begin: initial ? 0 : _displayedBytes, end: target);
     if (_reduce) {
       _displayedBytes = target;
       return;
@@ -627,15 +631,24 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
             Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Text(label.value, style: numberStyle),
-                    const SizedBox(width: 4),
-                    Text(label.unit, style: unitStyle),
-                  ],
+                // The ring is a fixed 168px, but this label is not fixed-width:
+                // during the count-up it passes through decimal values
+                // (`12.9 GB`), and system text scaling can push it further.
+                // Integer finals always fit, which is exactly why a test that
+                // only pumps past the tween never saw the overflow — so scale
+                // down rather than spill out of the ring.
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      Text(label.value, style: numberStyle),
+                      const SizedBox(width: 4),
+                      Text(label.unit, style: unitStyle),
+                    ],
+                  ),
                 ),
                 Text(
                   'POOLED',
