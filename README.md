@@ -75,19 +75,38 @@ donate quota-capped disk space and appear as a single pooled drive (see
 
 ## What you can do with it (v2.4.0 pooled cloud wave)
 
-- **Pool several disks into one drive** — each device donates a quota-capped
-  slice of its own free space, the app shows the sum as a single pooled cloud
+- **Contribute free space from several disks** — each device donates a
+  quota-capped slice of its own free space, and the app shows the sum as one
+  pooled capacity figure
 - **Contribute this device** — one bottom sheet, slider capped at this
   device's real free space (never a fabricated number)
 - **Health at a glance** — one donut ring over the whole pool plus a ZFS-style
   headline: `ONLINE` / `DEGRADED` / `AT RISK` / `OFFLINE`
-- **Contributors list** — see what each device gives and uses, resize a share,
-  or revoke a device and let its chunks re-replicate onto the rest
-- **Replication, not luck** — every chunk is written to R=2 copies picked by
-  weighted rendezvous hashing; the coordinator resolves every read and repairs
-  missing copies in the background
-- **Honest reads** — a file whose slots are missing or unreadable is reported
-  incomplete rather than returned short
+- **Contributors list** — see what each device gives and reserves, resize a
+  share, or revoke a device and take its slice straight back out of the pool
+- **Quotas you control** — every device is capped at the share you allowed
+  it, and revoking one returns its slice to the pool at once
+
+## What you can do with it (v2.5.0 interface wave)
+
+- **Transfers start again** — v2.4.0 never began one: a listener called
+  itself, overflowed the stack, and the first transfer silently died. Fixed,
+  with a test that fails if it ever comes back
+- **Watch the pool work** — a live activity strip sits over the pool hero and
+  reports aggregate throughput across every device while transfers run
+- **Trust the numbers** — Storage and Pool both stamp their hero figures with
+  a freshness line ("Updated just now") that refreshes itself, so a stale
+  reading never passes as a current one
+- **A graded read of the pool** — the meter shifts through three bands and
+  offers the matching fix: *Free up space* past 75%, *Raise quota* past 85%,
+  and a plain warning at 90%
+- **A contributor list that scales** — past six devices it folds into one
+  expandable row instead of pushing the rest of the screen out of view
+- **Nothing clipped at large text** — hero numbers, the storage ring and the
+  folded contributor rows scale down to fit at Android's 200% font size
+  instead of overflowing, guarded by a test on both screens
+- **Copy you can act on** — every error names the cause *and* the next step,
+  every icon-only control has a tooltip, and no screen describes data  placement that does not happen
 
 ## What you can do with it
 
@@ -302,8 +321,13 @@ design language and `TEST_PLAN.md` for manual test cases.
   external dir and picker-chosen folders work everywhere.
 - True internet exposure needs your VPN/port-forward (see above); there is no
   relay server, by design.
-- The pooled cloud is new in v2.4.0 and designed for 2–5 devices: with a
-  single contributor every chunk has one copy of the two the replication
-  factor asks for, so the banner reports `AT RISK` until a second device
-  joins. Contributor nodes also default to plain HTTP on the LAN — supply a
-  PEM pair before relying on the certificate pin.
+- The pooled cloud manages contributors, quotas and capacity today, but files
+  are still stored on the host you upload to. The chunk engine — placement,
+  R=2 replication, repair and the write path's failure modes — is built and
+  covered by an 823-line suite (`test/unit/pool_writepath_test.dart`), yet
+  nothing in the upload path calls it: `PoolStorage` is never constructed, so
+  an uploaded file never leaves that host. The Pool screen's figures are
+  therefore reserved capacity, not stored bytes. Wiring the engine into the
+  upload path is the next piece of work.
+- The pooled cloud is designed for 2–5 devices. Contributor nodes also  default to plain HTTP on the LAN — supply a PEM pair before relying on the
+  certificate pin.

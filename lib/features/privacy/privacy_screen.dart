@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/providers.dart';
@@ -17,6 +18,8 @@ class PrivacyScreen extends ConsumerStatefulWidget {
 
 class _PrivacyScreenState extends ConsumerState<PrivacyScreen> {
   int _searchCount = 0;
+  bool _searchLoading = true;
+  String? _searchError;
 
   @override
   void initState() {
@@ -25,14 +28,29 @@ class _PrivacyScreenState extends ConsumerState<PrivacyScreen> {
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
+    setState(() {
+      _searchLoading = true;
+      _searchError = null;
+    });
     try {
       final prefs = await SharedPreferences.getInstance();
+      final count = (prefs.getStringList('search_history') ?? []).length;
       if (!mounted) return;
       setState(() {
-        _searchCount =
-            (prefs.getStringList('search_history') ?? []).length;
+        _searchCount = count;
+        _searchLoading = false;
+        _searchError = null;
       });
-    } catch (_) {}
+    } catch (_) {
+      // "0 recent queries" would be a lie when the real answer is
+      // "couldn't load" — say so and offer a retry.
+      if (!mounted) return;
+      setState(() {
+        _searchLoading = false;
+        _searchError = 'Could not load search history.';
+      });
+    }
   }
 
   Future<void> _clearSearch() async {
@@ -44,7 +62,12 @@ class _PrivacyScreenState extends ConsumerState<PrivacyScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Search history cleared.')),
       );
-    } catch (_) {}
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not clear search history.')),
+      );
+    }
   }
 
   Future<void> _clearOffline() async {
@@ -78,6 +101,15 @@ class _PrivacyScreenState extends ConsumerState<PrivacyScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Transfer history cleared.')),
     );
+  }
+
+  String _searchSubtitle() {
+    if (_searchLoading) return 'Loading…';
+    if (_searchError != null) return _searchError!;
+    final count = _searchCount;
+    final noun =
+        Intl.pluralLogic(count, one: 'query', other: 'queries');
+    return '$count recent $noun on this device';
   }
 
   @override
@@ -125,20 +157,23 @@ class _PrivacyScreenState extends ConsumerState<PrivacyScreen> {
                 ListTile(
                   leading: const Icon(Icons.history_rounded),
                   title: const Text('Search history'),
-                  subtitle:
-                      Text('$_searchCount recent querie(s) on this device'),
-                  trailing: TextButton(
-                    onPressed:
-                        _searchCount == 0 ? null : _clearSearch,
-                    child: const Text('Clear'),
-                  ),
+                  subtitle: Text(_searchSubtitle()),
+                  trailing: _searchError != null
+                      ? TextButton(
+                          onPressed: _load, child: const Text('Retry'))
+                      : TextButton(
+                          onPressed: (_searchLoading || _searchCount == 0)
+                              ? null
+                              : _clearSearch,
+                          child: const Text('Clear')),
                 ),
                 const Divider(height: 1),
                 ListTile(
                   leading:
                       const Icon(Icons.swap_vert_circle_rounded),
                   title: const Text('Transfer history'),
-                  subtitle: Text('$transfers entr(ies) on this device'),
+                  subtitle: Text(
+                      '$transfers ${Intl.pluralLogic(transfers, one: 'entry', other: 'entries')} on this device'),
                   trailing: TextButton(
                     onPressed:
                         transfers == 0 ? null : _clearTransfers,

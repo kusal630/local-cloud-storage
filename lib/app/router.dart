@@ -24,6 +24,9 @@ import '../features/transfers/transfers_screen.dart';
 import '../features/trash/trash_screen.dart';
 import '../features/welcome/welcome_screen.dart';
 
+import '../widgets/activity_strip.dart';
+
+
 final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 /// Coarse device class reported to the pool registry — the contributors list
@@ -161,35 +164,51 @@ final routerProvider = Provider<GoRouter>((ref) {
 });
 
 /// Bottom-navigation shell for Client Mode screens (5 max — thumb zone).
-class ClientShell extends StatelessWidget {
+class ClientShell extends ConsumerWidget {
   const ClientShell({required this.navigationShell, super.key});
   final StatefulNavigationShell navigationShell;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Watched so the activity strip repaints while a transfer runs — the
+    // manager notifies on every queue mutation and progress tick.
+    final manager = ref.watch(transferManagerProvider);
     return Scaffold(
       body: navigationShell,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: navigationShell.currentIndex,
-        // Tapping the active tab resets its stack (expected behavior).
-        onDestinationSelected: (i) => navigationShell.goBranch(
-          i,
-          initialLocation: i == navigationShell.currentIndex,
-        ),
-        destinations: const [
-          NavigationDestination(
-              icon: Icon(Icons.folder_rounded), label: 'Files'),
-          NavigationDestination(
-              icon: Icon(Icons.swap_vert_circle_rounded),
-              label: 'Transfers'),
-          NavigationDestination(
-              icon: Icon(Icons.delete_outline_rounded), label: 'Trash'),
-          NavigationDestination(
-              icon: Icon(Icons.sd_storage_rounded), label: 'Storage'),
-          NavigationDestination(
-              icon: Icon(Icons.settings_rounded), label: 'Settings'),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ActivityStrip(
+            tasks: manager.tasks,
+            onOpen: () => navigationShell.goBranch(
+              1,
+              initialLocation: navigationShell.currentIndex == 1,
+            ),
+          ),
+          NavigationBar(
+            selectedIndex: navigationShell.currentIndex,
+            // Tapping the active tab resets its stack (expected behavior).
+            onDestinationSelected: (i) => navigationShell.goBranch(
+              i,
+              initialLocation: i == navigationShell.currentIndex,
+            ),
+            destinations: const [
+              NavigationDestination(
+                  icon: Icon(Icons.folder_rounded), label: 'Files'),
+              NavigationDestination(
+                  icon: Icon(Icons.swap_vert_circle_rounded),
+                  label: 'Transfers'),
+              NavigationDestination(
+                  icon: Icon(Icons.delete_outline_rounded), label: 'Trash'),
+              NavigationDestination(
+                  icon: Icon(Icons.sd_storage_rounded), label: 'Storage'),
+              NavigationDestination(
+                  icon: Icon(Icons.settings_rounded), label: 'Settings'),
+            ],
+          ),
         ],
       ),
     );
   }
 }
+

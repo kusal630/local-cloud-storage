@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:localvault/client/services/file_service.dart';
+import 'package:localvault/core/errors/app_exceptions.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:localvault/app/providers.dart';
@@ -241,6 +242,10 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
   bool _loading = false;
   List<VaultFile> _items = [];
   String? _error;
+
+  /// Raw text behind [_error], only when it says more than the friendly
+  /// copy does — surfaced through [ErrorState]'s collapsed disclosure.
+  String? _errorDetails;
   String _sortField = 'name';
   bool _sortAsc = true;
   bool _dragging = false;
@@ -288,7 +293,9 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         .length;
     if (done != _doneCount) {
       _doneCount = done;
-      _load();
+      // Background: the user may be mid-scroll or mid-selection. A completed
+      // transfer must not blank the list they are looking at.
+      _load(background: true);
     }
   }
 
@@ -304,7 +311,10 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         });
       } else if (version != _syncVersion) {
         setState(() => _syncVersion = version);
-        await _load();
+        // Background: a host-side revision arriving every 10s used to swap the
+        // whole list for a skeleton, throwing away scroll position and
+        // selection on each tick.
+        await _load(background: true);
         if (!mounted) return;
         setState(() => _syncedAt = DateTime.now());
       }
@@ -373,10 +383,21 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     } catch (_) {}
   }
 
-  Future<void> _load() async {
+  /// Reloads the list.
+  ///
+  /// [background] marks the refreshes that happen *under* the user — the 10s
+  /// sync poll and a completed transfer. Those keep the rendered list and its
+  /// scroll position, signalling the in-flight fetch with a thin bar under the
+  /// app bar instead of replacing everything the user was reading with a
+  /// skeleton. Every other caller is a foreground reload (navigation, filter,
+  /// an action that changed the data) and blanks to the skeleton exactly as
+  /// before: showing the previous folder's contents while the next one loads
+  /// would be worse than showing nothing.
+  Future<void> _load({bool background = false}) async {
     setState(() {
       _loading = true;
       _error = null;
+      if (!background) _items = [];
     });
     try {
       final svc = ref.read(fileServiceProvider);
@@ -403,7 +424,13 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        // Named cause plus next step in the copy; anything the app cannot
+        // translate moves behind ErrorState's disclosure rather than being
+        // rendered at the reader.
+        _error = e is AppException
+            ? e.message
+            : "Couldn't load your files. Pull down to try again.";
+        _errorDetails = e is AppException ? null : e.toString();
         _loading = false;
       });
     }
@@ -1486,6 +1513,15 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         title: _selectionMode
             ? Text('${_selected.length} selected')
             : const Text('Files'),
+        // In-flight background refresh: a thin indeterminate bar under the app
+        // bar, so a sync that keeps the list on screen is still visibly doing
+        // something without ever replacing it.
+        bottom: _loading && _items.isNotEmpty
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(2),
+                child: LinearProgressIndicator(minHeight: 2),
+              )
+            : null,
         leading: _selectionMode
             ? IconButton(
                 icon: const Icon(Icons.close),
@@ -1848,8 +1884,16 @@ class _FilesScreenState extends ConsumerState<FilesScreen> {
         selected: _selected,
       );
     }
-    if (_loading) return const SkeletonList();
-    if (_error != null) return ErrorState(message: _error!, onRetry: _load);
+    // Skeleton only when there is nothing on screen to keep. A background
+    // refresh falls through to the list below instead of blanking it.
+    if (_loading && _items.isEmpty) return const SkeletonList();
+    if (_error != null) {
+      return ErrorState(
+        message: _error!,
+        details: _errorDetails,
+        onRetry: _load,
+      );
+    }
     if (_items.isEmpty) {
       return const EmptyState(
         icon: Icons.folder_open_rounded,

@@ -206,8 +206,17 @@ class TransferManager extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Every mutation funnels here: listeners repaint, and the queue is
+  /// persisted so a restart can restore it.
+  ///
+  /// This was written as `void _changed() { _changed(); ... }` — a literal
+  /// self-call. Every path through it threw StackOverflowError before the
+  /// first `notifyListeners()` or `_persist()` could run, so `enqueueUpload`
+  /// blew up and no transfer ever started. It stayed hidden because no test
+  /// had ever invoked a mutating method, and `restore()` swallowed its own
+  /// overflow inside `catch (_) {}`.
   void _changed() {
-    _changed();
+    notifyListeners();
     unawaited(_persist());
   }
 

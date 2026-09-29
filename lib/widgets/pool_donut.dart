@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show SemanticsRole;
 
 import 'common.dart';
 
@@ -92,6 +93,22 @@ String formatPoolSize(int bytes) {
   final sp = formatted.indexOf(' ');
   if (sp < 0) return (value: formatted, unit: '');
   return (value: formatted.substring(0, sp), unit: formatted.substring(sp + 1));
+}
+
+/// Screen-reader spelling of a [formatPoolSize] figure (§10): `30 GB` →
+/// `30 gigabytes`, because screen readers say "GB" inconsistently. Visible
+/// copy stays `30 GB` — only the semantics change.
+String spellPoolSize(int bytes) {
+  final parts = splitPoolLabel(formatPoolSize(bytes));
+  if (parts.unit.isEmpty) return parts.value;
+  final unit = switch (parts.unit) {
+    'TB' => 'terabytes',
+    'GB' => 'gigabytes',
+    'MB' => 'megabytes',
+    'KB' => 'kilobytes',
+    _ => 'bytes', // formatPoolSize's zero case and raw bytes
+  };
+  return '${parts.value} $unit';
 }
 
 /// Roboto Mono 500 digits for contributed/used figures (§2) with tabular
@@ -355,6 +372,34 @@ class PoolRingPainter extends CustomPainter {
 // Widget
 // ---------------------------------------------------------------------------
 
+/// Supplies the hero number's tap action to [PoolDonut].
+///
+/// The donut is built by `PoolCapacityCard`, which renders stats — not the
+/// snapshot — while the sheet behind "Where this number comes from"
+/// (UX_BENCHMARK §5) needs per-device shares, reservations and totals that
+/// only the screen holding the `PoolStatus` can answer. The screen therefore
+/// wraps its capacity card in this scope, and the donut looks the callback up
+/// on build. Without a scope the hero number simply isn't tappable, so a
+/// donut rendered on its own (a widget test, say) keeps its old behaviour.
+class PoolHeroScope extends InheritedWidget {
+  const PoolHeroScope({
+    super.key,
+    required this.onShowDetails,
+    required super.child,
+  });
+
+  /// Opens the breakdown sheet. Supplied by the screen that owns the state.
+  final VoidCallback onShowDetails;
+
+  static VoidCallback? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<PoolHeroScope>()
+      ?.onShowDetails;
+
+  @override
+  bool updateShouldNotify(PoolHeroScope oldWidget) =>
+      onShowDetails != oldWidget.onShowDetails;
+}
+
 /// Unified pool capacity ring: one number, many contributors (§5).
 ///
 /// Geometry: `sweep_i = (quota_i / totalQuota) * (360 - n * gapDeg)`, 4° gaps,
@@ -412,6 +457,17 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
   late final AnimationController _countCtrl; // 700ms easeOutExpo count-up
   late final AnimationController _focusCtrl; // 180ms easeOut segment focus
   late final AnimationController _haloCtrl; // 400ms easeOut quota halo
+  late final AnimationController _sparkCtrl; // 900ms easeInOut join spark (§8)
+  // Curves live on the *reads*: the controllers tick linearly and every value
+  // handed to a tween/painter goes through `drive(CurveTween(...))`, which is
+  // what the §8 table (and the comments below) promise. Reduced motion never
+  // animates the controllers, and every curve maps 0→0 and 1→1, so the
+  // collapsed values stay exact.
+  late final Animation<double> _sweepAnim; // Curves.easeOutCubic
+  late final Animation<double> _countAnim; // Curves.easeOutExpo
+  late final Animation<double> _focusAnim; // Curves.easeOut
+  late final Animation<double> _haloAnim; // Curves.easeOut
+  late final Animation<double> _sparkAnim; // Curves.easeInOut
   AnimationController? _placeholderCtrl; // rotating join highlight
   // `IntTween`, never `Tween<int>`: Tween.lerp does dynamic arithmetic, so an
   // int begin/end yields a double and the `as int` cast throws on every frame
@@ -422,11 +478,27 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
   int? _prevFocus;
   bool _reduce = false;
   bool _started = false;
+
+  /// Membership/geometry only — quota, offline, joining. Deliberately does
+  /// *not* include `used`: a heartbeat during an upload must never replay the
+  /// sweep (§11 "don't animate on every poll tick").
   String _signature = '';
 
+  /// `used` tracked separately so a usage-only change can redraw the overlay
+  /// without touching the sweep controller.
+  String _usedSignature = '';
+
+  // Join celebration (§8): after the ring re-balances, an `auto_awesome`
+  // spark laps the ring once and fades out.
+  int? _sparkIndex; // segment the spark is orbiting right now
+  int? _pendingSparkIndex; // waiting for the sweep to finish
+
   static String _sigOf(List<PoolDonutSegment> s) => s
-      .map((e) => '${e.quota}:${e.used}:${e.isOffline}:${e.isJoining}')
+      .map((e) => '${e.quota}:${e.isOffline}:${e.isJoining}')
       .join(',');
+
+  static String _usedSigOf(List<PoolDonutSegment> s) =>
+      s.map((e) => e.used).join(',');
 
   @override
   void initState() {
@@ -441,11 +513,24 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
         AnimationController(vsync: this, duration: const Duration(milliseconds: 180));
     _haloCtrl =
         AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
+    _sparkCtrl =
+        AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+    _sweepAnim =
+        _sweepCtrl.drive(CurveTween(curve: Curves.easeOutCubic));
+    _countAnim =
+        _countCtrl.drive(CurveTween(curve: Curves.easeOutExpo));
+    _focusAnim = _focusCtrl.drive(CurveTween(curve: Curves.easeOut));
+    _haloAnim = _haloCtrl.drive(CurveTween(curve: Curves.easeOut));
+    _sparkAnim =
+        _sparkCtrl.drive(CurveTween(curve: Curves.easeInOut));
     for (final c in [_sweepCtrl, _focusCtrl, _haloCtrl]) {
       c.addListener(_tick);
     }
+    _sweepCtrl.addStatusListener(_sweepStatus);
+    _sparkCtrl.addStatusListener(_sparkStatus);
     _countCtrl.addListener(_countTick);
     _signature = _sigOf(widget.segments);
+    _usedSignature = _usedSigOf(widget.segments);
   }
 
   void _tick() {
@@ -454,7 +539,7 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
 
   void _countTick() {
     final tween = _countTween;
-    if (tween != null) _displayedBytes = tween.transform(_countCtrl.value);
+    if (tween != null) _displayedBytes = tween.transform(_countAnim.value);
     _tick();
   }
 
@@ -479,6 +564,54 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
     } else {
       c.forward();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Join spark (§8): one `joinProgress 0→1` rebalances every arc, *then* an
+  // `Icons.auto_awesome` spark travels one lap and fades out. The spark waits
+  // for the sweep's status callback so the two never overlap, and never runs
+  // under reduced motion.
+  //
+  // The closing `AppHaptics.success()` (§8) belongs to `PoolScreen`, not
+  // here: the screen is what knows a join actually *landed*, it has to buzz
+  // even when reduced motion skips the spark, and one success pattern per
+  // join is exactly one.
+  // -------------------------------------------------------------------------
+
+  /// The segment index that just joined, or null when nothing joined.
+  ///
+  /// A join shows up either as a segment that stops being a placeholder
+  /// (`isJoining` true → false) or as an arc that lands in the ring for the
+  /// first time (segment count grows).
+  int? _joinEventIndex(PoolDonut old) {
+    final now = widget.segments;
+    final before = old.segments;
+    if (now.length > before.length) return before.length;
+    final limit = math.min(now.length, before.length);
+    for (var i = 0; i < limit; i++) {
+      if (before[i].isJoining && !now[i].isJoining) return i;
+    }
+    return null;
+  }
+
+  void _queueSpark(int index) {
+    if (_reduce) return; // reduced motion collapses the whole sequence (§8)
+    if (index >= widget.segments.length) return;
+    _pendingSparkIndex = index;
+  }
+
+  void _sweepStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    final index = _pendingSparkIndex;
+    if (index == null || _reduce || !mounted) return;
+    _pendingSparkIndex = null;
+    setState(() => _sparkIndex = index);
+    _sparkCtrl.forward(from: 0);
+  }
+
+  void _sparkStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || !mounted) return;
+    setState(() => _sparkIndex = null);
   }
 
   void _updateCount(int target, {bool initial = false}) {
@@ -508,6 +641,8 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
     if (_reduce) {
       _haloCtrl.value = target;
     } else if (_haloCtrl.value != target) {
+      // The controller steps linearly; `_haloAnim` applies easeOut on the
+      // read (§8: 0→2px over 400ms easeOut).
       _haloCtrl.animateTo(target);
     }
   }
@@ -530,10 +665,20 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
   void didUpdateWidget(PoolDonut old) {
     super.didUpdateWidget(old);
     final sig = _sigOf(widget.segments);
+    final usedSig = _usedSigOf(widget.segments);
     if (sig != _signature) {
+      final joinIndex = _joinEventIndex(old);
       _signature = sig;
+      _usedSignature = usedSig;
       _play(_sweepCtrl); // whole ring re-balances together (§8)
+      if (joinIndex != null) _queueSpark(joinIndex);
       _syncPlaceholder();
+    } else if (usedSig != _usedSignature) {
+      // Usage only: repaint the overlay on this build and leave the sweep
+      // alone. Restarting it here is exactly the §11 ❌ "animating on every
+      // poll tick" — every heartbeat mid-upload used to wipe and refill the
+      // ring.
+      _usedSignature = usedSig;
     }
     if (widget.centerBytes != old.centerBytes) {
       _updateCount(widget.centerBytes);
@@ -547,15 +692,63 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _sweepCtrl.removeStatusListener(_sweepStatus);
+    _sparkCtrl.removeStatusListener(_sparkStatus);
     for (final c in [_sweepCtrl, _focusCtrl, _haloCtrl]) {
       c.removeListener(_tick);
       c.dispose();
     }
+    _sparkCtrl.dispose();
     _countCtrl.removeListener(_countTick);
     _countCtrl.dispose();
     _placeholderCtrl?.removeListener(_tick);
     _placeholderCtrl?.dispose();
     super.dispose();
+  }
+
+  // -------------------------------------------------------------------------
+  // §8 join spark: `Icons.auto_awesome` (16px) in the contributor's segment
+  // colour travels one lap in 900ms `easeInOut` and fades out over the last
+  // 40% of it. Purely decorative — the enclosing `Semantics(excludeSemantics:
+  // true)` keeps it out of the accessibility tree.
+  // -------------------------------------------------------------------------
+  Widget _spark() {
+    final index = _sparkIndex;
+    if (index == null || index >= widget.segments.length) {
+      return const SizedBox.shrink();
+    }
+    // Same formula as the painter, so the spark rides the ring itself.
+    final radius = widget.size / 2 - (widget.strokeWidth * 1.25) / 2 - 4;
+    if (radius <= 0) return const SizedBox.shrink();
+    // 8 = half of the 16px icon, so the glyph's centre sits on the arc.
+    final inset = math.max(0.0, widget.size / 2 - radius - 8);
+    final color = widget.segments[index].color;
+    return Positioned.fill(
+      child: AnimatedBuilder(
+        animation: _sparkAnim,
+        builder: (context, _) {
+          final t = _sparkAnim.value;
+          final fade = t >= 0.6 ? math.max(0.0, (1 - t) / 0.4) : 1.0;
+          return RotationTransition(
+            turns: AlwaysStoppedAnimation<double>(t),
+            // A full-size child rotates about its own centre = the ring's
+            // centre, so the icon orbits rather than spins in place.
+            child: SizedBox.expand(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: EdgeInsets.only(top: inset),
+                  child: Opacity(
+                    opacity: fade,
+                    child: Icon(Icons.auto_awesome, size: 16, color: color),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -591,87 +784,142 @@ class _PoolDonutState extends State<PoolDonut> with TickerProviderStateMixin {
     );
 
     final count = segments.length;
-    final semanticsLabel =
-        'Pooled capacity ${formatPoolSize(capacity)}, ${formatPoolSize(totalUsed)} used, '
+    // §10: the unit is spelled out because screen readers read `GB`
+    // inconsistently. The visible copy below stays `30 GB`. Same treatment
+    // as StorageDonut (label + value + `SemanticsRole.status`): a custom
+    // -painted ring would otherwise announce as "image" or not at all, and
+    // `status` — not a live region — keeps it from being re-read per rebuild.
+    final semanticsValue =
+        '${spellPoolSize(totalUsed)} used of ${spellPoolSize(capacity)}, '
         '$count ${count == 1 ? 'contributor' : 'contributors'}';
+
+    // The ring's box is fixed, the type inside it is not: at 200% text scale
+    // the number, the unit and the sub-line together exceed it and spill past
+    // the ring. `scaleDown` only ever shrinks, so at 100% this renders the
+    // hero exactly as it does today (RESEARCH/UX_BENCHMARK.md item 8).
+    Widget centre = FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // The ring is a fixed 168px, but this label is not fixed-width:
+          // during the count-up it passes through decimal values
+          // (`12.9 GB`), and system text scaling can push it further.
+          // Integer finals always fit, which is exactly why a test that
+          // only pumps past the tween never saw the overflow — so scale
+          // down rather than spill out of the ring.
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(label.value, style: numberStyle),
+                const SizedBox(width: 4),
+                Text(label.unit, style: unitStyle),
+              ],
+            ),
+          ),
+          Text(
+            'POOLED',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                  color: scheme.primary,
+                ),
+          ),
+          if (widget.centerSubLine != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              widget.centerSubLine!,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: widget.centerColor ?? scheme.onSurfaceVariant,
+                    fontFeatures: _tabular,
+                  ),
+            ),
+          ],
+        ],
+      ),
+    );
+
+    final showDetails = PoolHeroScope.maybeOf(context);
+    if (showDetails == null) {
+      // A donut rendered without its screen (a widget test, say) has nothing
+      // to explain the number with: the status node below already speaks it,
+      // so the visible text stays out of the accessibility tree just as it
+      // did before the hero number became tappable.
+      centre = Semantics(excludeSemantics: true, child: centre);
+    } else {
+      centre = Semantics(
+        container: true,
+        button: true,
+        // Own label instead of merging the visible fragments, and an explicit
+        // `onTap` because the gesture itself is excluded above.
+        excludeSemantics: true,
+        label: 'Where this number comes from',
+        onTap: showDetails,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: showDetails,
+          // DESIGN §10: ≥44px target even when the number is short.
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: centre,
+            ),
+          ),
+        ),
+      );
+    }
 
     return SizedBox(
       width: widget.size,
       height: widget.size,
-      child: Semantics(
-        label: semanticsLabel,
-        image: true,
-        excludeSemantics: true,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            RepaintBoundary(
-              child: CustomPaint(
-                size: Size.square(widget.size),
-                painter: PoolRingPainter(
-                  segments: segments,
-                  sweeps: sweeps,
-                  gapDeg: widget.gapDeg,
-                  trackColor: poolRingTrackFor(brightness),
-                  freeAlpha: poolFreeAlphaFor(brightness),
-                  haloColor: brightness == Brightness.dark
-                      ? poolStatusError
-                      : poolStatusErrorLight,
-                  sweepProgress: _sweepCtrl.value,
-                  strokeWidth: widget.strokeWidth,
-                  focusIndex: widget.focusedIndex,
-                  previousFocusIndex: _prevFocus,
-                  focusProgress: _focusCtrl.value,
-                  haloProgress: _haloCtrl.value,
-                  placeholderRotation: _placeholderCtrl?.value,
-                  dashed: widget.dashed,
-                ),
-              ),
-            ),
-            Column(
-              mainAxisSize: MainAxisSize.min,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Semantics(
+            container: true,
+            excludeSemantics: true,
+            label: 'Pooled capacity',
+            value: semanticsValue,
+            role: SemanticsRole.status,
+            child: Stack(
+              alignment: Alignment.center,
               children: [
-                // The ring is a fixed 168px, but this label is not fixed-width:
-                // during the count-up it passes through decimal values
-                // (`12.9 GB`), and system text scaling can push it further.
-                // Integer finals always fit, which is exactly why a test that
-                // only pumps past the tween never saw the overflow — so scale
-                // down rather than spill out of the ring.
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.baseline,
-                    textBaseline: TextBaseline.alphabetic,
-                    children: [
-                      Text(label.value, style: numberStyle),
-                      const SizedBox(width: 4),
-                      Text(label.unit, style: unitStyle),
-                    ],
+                RepaintBoundary(
+                  child: CustomPaint(
+                    size: Size.square(widget.size),
+                    painter: PoolRingPainter(
+                      segments: segments,
+                      sweeps: sweeps,
+                      gapDeg: widget.gapDeg,
+                      trackColor: poolRingTrackFor(brightness),
+                      freeAlpha: poolFreeAlphaFor(brightness),
+                      haloColor: brightness == Brightness.dark
+                          ? poolStatusError
+                          : poolStatusErrorLight,
+                      // §8 curves — see the field comments: controllers tick
+                      // linearly, the curves live on these reads.
+                      sweepProgress: _sweepAnim.value,
+                      strokeWidth: widget.strokeWidth,
+                      focusIndex: widget.focusedIndex,
+                      previousFocusIndex: _prevFocus,
+                      focusProgress: _focusAnim.value,
+                      haloProgress: _haloAnim.value,
+                      placeholderRotation: _placeholderCtrl?.value,
+                      dashed: widget.dashed,
+                    ),
                   ),
                 ),
-                Text(
-                  'POOLED',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.2,
-                        color: scheme.primary,
-                      ),
-                ),
-                if (widget.centerSubLine != null) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    widget.centerSubLine!,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: widget.centerColor ?? scheme.onSurfaceVariant,
-                          fontFeatures: _tabular,
-                        ),
-                  ),
-                ],
+                if (_sparkIndex != null) _spark(),
               ],
             ),
-          ],
-        ),
+          ),
+          centre,
+        ],
       ),
     );
   }

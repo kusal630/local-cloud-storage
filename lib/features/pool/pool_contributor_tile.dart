@@ -15,6 +15,9 @@ const _gib = 1024 * 1024 * 1024;
 /// One contributor row (RESEARCH/DESIGN.md §6): 40px tinted circle + device
 /// icon, name + status pills, mono gives/uses figures, a `StorageMeter` of its
 /// own share, and a `PopupMenuButton` for the less-frequent actions.
+///
+/// The row itself opens the quota sheet — the tile's primary management
+/// action (§9 maps `light` to a tile tap, which `HapticListTile` fires).
 class PoolContributorTile extends StatefulWidget {
   const PoolContributorTile({
     super.key,
@@ -23,8 +26,6 @@ class PoolContributorTile extends StatefulWidget {
     this.joinTimedOut = false,
     this.onRetryJoin,
     this.onQuotaChanged,
-    this.onPromote,
-    this.onViewAudit,
     this.onRevoke,
   });
 
@@ -37,10 +38,11 @@ class PoolContributorTile extends StatefulWidget {
   final bool joinTimedOut;
 
   final VoidCallback? onRetryJoin;
-  final ValueChanged<int>? onQuotaChanged;
-  final VoidCallback? onPromote;
-  final VoidCallback? onViewAudit;
-  final VoidCallback? onRevoke;
+  /// The new share, once the pool confirms it. The sheet only buzzes and
+  /// reports success after this completes — never before, because a quota
+  /// that did not save must not be announced as saved.
+  final Future<void> Function(int quotaBytes)? onQuotaChanged;
+  final Future<void> Function()? onRevoke;
 
   @override
   State<PoolContributorTile> createState() => _PoolContributorTileState();
@@ -136,13 +138,19 @@ class _PoolContributorTileState extends State<PoolContributorTile> {
     final scheme = Theme.of(context).colorScheme;
     final c = widget.contributor;
     final pill = _statusPill;
+    // §10 recency: the phrase matters exactly where the device is *gone*, so
+    // offline rows carry `last seen 12m ago` and online rows (whose heartbeat
+    // is current by definition) stay quiet. Never a raw timestamp.
     final rightLabel = c.isThisDevice
         ? 'This device'
-        : (!c.isOffline && c.lastSeen != null)
+        : (c.isOffline && c.lastSeen != null)
             ? 'last seen ${formatRelative(c.lastSeen!)}'
             : null;
 
     return HapticListTile(
+      // The row's primary management action (§9: `light` on a tile tap —
+      // HapticListTile fires it on the gesture).
+      onTap: _showQuotaSheet,
       leading: Container(
         width: 40,
         height: 40,
@@ -231,14 +239,6 @@ class _PoolContributorTileState extends State<PoolContributorTile> {
             value: 'quota',
             child: Text('Set quota…'),
           ),
-          const PopupMenuItem(
-            value: 'promote',
-            child: Text('Promote to primary'),
-          ),
-          const PopupMenuItem(
-            value: 'audit',
-            child: Text('View audit entry'),
-          ),
           PopupMenuItem(
             value: 'revoke',
             child: Text(
@@ -255,27 +255,9 @@ class _PoolContributorTileState extends State<PoolContributorTile> {
   }
 
   void _onMenu(String value) {
-    final c = widget.contributor;
     switch (value) {
       case 'quota':
         _showQuotaSheet();
-      case 'promote':
-        AppHaptics.medium(); // §9: medium = promote
-        if (widget.onPromote != null) {
-          widget.onPromote!();
-        } else {
-          AppHaptics.success();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('${c.name} is now primary')),
-          );
-        }
-      case 'audit':
-        AppHaptics.light();
-        if (widget.onViewAudit != null) {
-          widget.onViewAudit!();
-        } else {
-          _showAuditSheet();
-        }
       case 'revoke':
         // Destructive — heavy feedback on the gesture (§6/README).
         AppHaptics.heavy();
@@ -368,66 +350,20 @@ class _PoolContributorTileState extends State<PoolContributorTile> {
       },
     );
     if (saved == null || !mounted) return;
+    final apply = widget.onQuotaChanged;
+    if (apply == null) return;
+
+    try {
+      await apply(saved);
+    } catch (_) {
+      // PoolScreen already named the failure and buzzed the error cue — one
+      // report per failure, and never a success the pool did not accept.
+      return;
+    }
+    if (!mounted) return;
     AppHaptics.success();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Quota set to ${formatPoolSize(saved)}')),
-    );
-    widget.onQuotaChanged?.call(saved);
-  }
-
-  Future<void> _showAuditSheet() async {
-    final c = widget.contributor;
-    final pill = _statusPill;
-    await showModalBottomSheet<void>(
-      context: context,
-      builder: (ctx) {
-        Widget row(String k, String v) => Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(k,
-                      style: Theme.of(ctx)
-                          .textTheme
-                          .bodyMedium
-                          ?.copyWith(
-                              color: Theme.of(ctx).colorScheme.onSurfaceVariant)),
-                  Text(v, style: poolMonoDigits.copyWith(fontSize: 13)),
-                ],
-              ),
-            );
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Audit entry',
-                    style: Theme.of(ctx)
-                        .textTheme
-                        .titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w700)),
-                const SizedBox(height: 8),
-                row('Device', c.name),
-                row('Status', pill.label),
-                row('Contributes', formatPoolSize(c.quotaBytes)),
-                row('Stores', formatPoolSize(c.usedBytes)),
-                if (c.lastSeen != null)
-                  row('Last seen', formatRelative(c.lastSeen!)),
-                const SizedBox(height: 16),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: const Text('Close'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 
@@ -456,14 +392,13 @@ class _PoolContributorTileState extends State<PoolContributorTile> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Its ${formatPoolSize(c.quotaBytes)} leaves the pool; '
-                '${formatPoolSize(c.usedBytes)} of stored chunks re-replicate.',
+                'Its ${formatPoolSize(c.quotaBytes)} leaves the pool, and '
+                'your files stay where they are.',
                 style: Theme.of(ctx).textTheme.bodyMedium,
               ),
               const SizedBox(height: 8),
               Text(
-                'Uploads keep working on the remaining devices while chunks '
-                'are copied across.',
+                'Uploads keep working on the devices that remain.',
                 style: Theme.of(ctx)
                     .textTheme
                     .bodySmall
@@ -500,29 +435,37 @@ class _PoolContributorTileState extends State<PoolContributorTile> {
     );
     if (confirmed != true || !mounted) return;
     AppHaptics.medium(); // §9: medium = revoke confirm
-    if (widget.onRevoke != null) {
-      widget.onRevoke!();
+    final revoke = widget.onRevoke;
+    if (revoke != null) {
+      try {
+        await revoke();
+      } catch (_) {
+        // PoolScreen named the failure and buzzed the error cue, so there is
+        // exactly one report per failure — and nothing left dangling as an
+        // unhandled async error.
+      }
     } else {
+      // No callback means the pool service is not reachable from here, so
+      // nothing was revoked. Say that instead of claiming work in progress.
+      AppHaptics.error();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content:
-                Text('Revoking ${c.name} — re-replicating its chunks')),
+        const SnackBar(content: Text('Pool service not connected yet.')),
       );
     }
   }
 }
 
 /// Contributors section (§6): header + `Add device`, then the card holding
-/// every `PoolContributorTile` — "This device" pinned first, entrance
-/// staggered 60ms per row.
-class PoolContributorsCard extends StatelessWidget {
+/// every `PoolContributorTile` — "This device" pinned first, then the
+/// biggest shares, entrance staggered 60ms per row. Past [_maxVisible] the
+/// list folds to a single line, so a large pool cannot push everything else
+/// below the fold.
+class PoolContributorsCard extends StatefulWidget {
   const PoolContributorsCard({
     super.key,
     required this.contributors,
     this.onAddDevice,
     this.onQuotaChanged,
-    this.onPromote,
-    this.onViewAudit,
     this.onRevoke,
     this.onRetryJoin,
     this.joinTimedOut = false,
@@ -530,35 +473,64 @@ class PoolContributorsCard extends StatelessWidget {
 
   final List<PoolContributor> contributors;
   final VoidCallback? onAddDevice;
-  final void Function(PoolContributor contributor, int quota)? onQuotaChanged;
-  final void Function(PoolContributor contributor)? onPromote;
-  final void Function(PoolContributor contributor)? onViewAudit;
-  final void Function(PoolContributor contributor)? onRevoke;
+  final Future<void> Function(PoolContributor contributor, int quota)?
+      onQuotaChanged;
+  final Future<void> Function(PoolContributor contributor)? onRevoke;
   final VoidCallback? onRetryJoin;
   final bool joinTimedOut;
 
   @override
+  State<PoolContributorsCard> createState() => _PoolContributorsCardState();
+}
+
+class _PoolContributorsCardState extends State<PoolContributorsCard> {
+  /// Rows shown before the "N more devices" line takes over.
+  static const int _maxVisible = 6;
+
+  /// The tail stays folded until the reader asks for it.
+  bool _showAll = false;
+
+  @override
   Widget build(BuildContext context) {
-    if (contributors.isEmpty) return const SizedBox.shrink();
+    if (widget.contributors.isEmpty) return const SizedBox.shrink();
     final brightness = Theme.of(context).brightness;
     final reduce = MediaQuery.of(context).disableAnimations;
 
-    // "This device" pinned to the top; otherwise keep arrival order.
-    final ordered = [
-      ...contributors.where((c) => c.isThisDevice),
-      ...contributors.where((c) => !c.isThisDevice),
+    // "This device" first, then the largest shares: a pool reads from the
+    // devices carrying most of it, and share order beats arrival order.
+    final pinned = [
+      for (final c in widget.contributors)
+        if (c.isThisDevice) c,
     ];
+    final others = [
+      for (final c in widget.contributors)
+        if (!c.isThisDevice) c,
+    ]..sort((a, b) => b.quotaBytes.compareTo(a.quotaBytes));
+    final ordered = [...pinned, ...others];
+
+    final visible = _showAll || ordered.length <= _maxVisible
+        ? ordered
+        : ordered.take(_maxVisible).toList();
+    final hiddenCount = ordered.length - visible.length;
+    final hiddenBytes = ordered
+        .skip(visible.length)
+        .fold<int>(0, (sum, c) => sum + c.quotaBytes);
+    // One label for the whole tail, so collapsing costs no information —
+    // the reader still sees how many devices and how much quota are hidden.
+    final tailLabel = '$hiddenCount more '
+        '${hiddenCount == 1 ? 'device' : 'devices'} · '
+        '${formatPoolSize(hiddenBytes)}';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SectionHeader(
-          title: 'CONTRIBUTORS (${contributors.length})',
+          title: 'CONTRIBUTORS (${widget.contributors.length})',
           action: TextButton(
             onPressed: () {
               AppHaptics.light();
-              if (onAddDevice != null) {
-                onAddDevice!();
+              if (widget.onAddDevice != null) {
+                widget.onAddDevice!();
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -573,26 +545,36 @@ class PoolContributorsCard extends StatelessWidget {
           child: ListView.separated(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            itemCount: ordered.length,
+            itemCount: visible.length + (hiddenCount > 0 ? 1 : 0),
             separatorBuilder: (_, _) => const Divider(),
             itemBuilder: (context, index) {
-              final c = ordered[index];
+              if (index >= visible.length) {
+                return ListTile(
+                  dense: true,
+                  title: Text(tailLabel),
+                  trailing: const Icon(Icons.expand_more),
+                  onTap: () {
+                    AppHaptics.light();
+                    setState(() => _showAll = true);
+                  },
+                );
+              }
+              final c = visible[index];
               // Slot colour comes from the *original* index so pinning or a
               // status flip never reshuffles colours (§3).
-              final slot = contributors.indexOf(c);
+              final slot = widget.contributors.indexOf(c);
               final tile = PoolContributorTile(
                 key: ValueKey('poolTile-${c.id}'),
                 contributor: c,
                 color: poolSegmentAt(slot, brightness),
-                joinTimedOut: joinTimedOut,
-                onRetryJoin: onRetryJoin,
-                onQuotaChanged: onQuotaChanged == null
+                joinTimedOut: widget.joinTimedOut,
+                onRetryJoin: widget.onRetryJoin,
+                onQuotaChanged: widget.onQuotaChanged == null
                     ? null
-                    : (quota) => onQuotaChanged!(c, quota),
-                onPromote: onPromote == null ? null : () => onPromote!(c),
-                onViewAudit:
-                    onViewAudit == null ? null : () => onViewAudit!(c),
-                onRevoke: onRevoke == null ? null : () => onRevoke!(c),
+                    : (quota) => widget.onQuotaChanged!(c, quota),
+                onRevoke: widget.onRevoke == null
+                    ? null
+                    : () => widget.onRevoke!(c),
               );
               if (reduce) return tile;
               return tile

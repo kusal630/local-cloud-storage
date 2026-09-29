@@ -69,29 +69,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _SettingsSection(
             title: 'Appearance',
             children: [
-              _SettingsTile(
-                icon: Icons.dark_mode,
-                title: 'Theme',
-                subtitle: themeMode == ThemeMode.system
-                    ? 'System'
-                    : themeMode == ThemeMode.dark
-                        ? isAmoled ? 'AMOLED Black' : 'Dark'
-                        : 'Light',
-                onTap: () {
-                  final modes = [
-                    ThemeMode.system,
-                    ThemeMode.light,
-                    ThemeMode.dark
-                  ];
-                  final idx = modes.indexOf(themeMode);
-                  final next = modes[(idx + 1) % modes.length];
-                  ref.read(themeModeProvider.notifier).state = next;
-                  if (next == ThemeMode.dark && !isAmoled) {
-                    ref.read(amoledProvider.notifier).state = true;
-                  } else if (next == ThemeMode.dark && isAmoled) {
-                    ref.read(amoledProvider.notifier).state = false;
-                  }
-                },
+              // Compact labelled control rather than a silent cycle: the
+              // trailing dropdown shows the current mode and, when tapped,
+              // the full option set (same pattern as Auto-lock below).
+              ListTile(
+                leading: const Icon(Icons.dark_mode),
+                title: const Text('Theme'),
+                subtitle: const Text('System, light or dark'),
+                trailing: DropdownButton<ThemeMode>(
+                  value: themeMode,
+                  items: const [
+                    DropdownMenuItem(
+                        value: ThemeMode.system, child: Text('System')),
+                    DropdownMenuItem(
+                        value: ThemeMode.light, child: Text('Light')),
+                    DropdownMenuItem(
+                        value: ThemeMode.dark, child: Text('Dark')),
+                  ],
+                  onChanged: (mode) {
+                    if (mode == null) return;
+                    ref.read(themeModeProvider.notifier).state = mode;
+                  },
+                ),
               ),
               if (themeMode == ThemeMode.dark)
                 SwitchListTile(
@@ -205,7 +204,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               _SettingsTile(
                 icon: Icons.info_outline,
                 title: 'About LocalVault',
-                subtitle: 'Version 2.4.0',
+                subtitle: 'Version 2.5.0',
                 onTap: () => _showAbout(context),
               ),
             ],
@@ -285,8 +284,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           if (_hasPin)
             TextButton(
                 onPressed: () => Navigator.pop(ctx, 'disable'),
-                child: const Text('Disable',
-                    style: TextStyle(color: Colors.red))),
+                child: Text('Disable',
+                    style: TextStyle(color: Theme.of(ctx).colorScheme.error))),
           TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel')),
@@ -339,7 +338,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (confirmed != true) return;
     try {
       await ref.read(authServiceProvider).logout();
-    } catch (_) {}
+    } catch (_) {
+      // Never fail silently — the user stays put and can retry.
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content:
+                  Text('Could not disconnect from the host. Try again.')),
+        );
+      }
+      return;
+    }
     if (context.mounted) {
       ref.read(appModeProvider.notifier).state = AppMode.welcome;
       context.go('/');
@@ -350,7 +359,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'LocalVault',
-      applicationVersion: '2.4.0',
+      applicationVersion: '2.5.0',
       children: [
         const Text(
           'LocalVault turns local storage into a private local cloud. '
@@ -372,8 +381,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
 /// Auto Backup: watches chosen folders and uploads new files to
 /// `Auto Backup/<device>` on the cloud. Runs while the app is open.
-class _BackupSection extends ConsumerWidget {
+class _BackupSection extends ConsumerStatefulWidget {
   const _BackupSection();
+  @override
+  ConsumerState<_BackupSection> createState() => _BackupSectionState();
+}
+
+class _BackupSectionState extends ConsumerState<_BackupSection> {
+  /// Lives in initState, never inside build (DESIGN.md): a controller built
+  /// during build is discarded — and leaks — on every rebuild, which throws
+  /// away in-progress typing whenever any switch in this section toggles.
+  late final TextEditingController _ignorePatterns;
+
+  /// Cleared when the user edits or submits the field, so a background
+  /// reload of the saved patterns cannot clobber what they are typing.
+  bool _ignoreEdited = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ignorePatterns = TextEditingController(
+        text: ref.read(backupServiceProvider).ignorePatterns.join(', '));
+  }
+
+  @override
+  void dispose() {
+    _ignorePatterns.dispose();
+    super.dispose();
+  }
 
   Future<void> _runNow(BuildContext context, WidgetRef ref) async {
     final session = ref.read(sessionStoreProvider);
@@ -397,8 +432,16 @@ class _BackupSection extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final backup = ref.watch(backupServiceProvider);
+    // Keep the field in sync with saved patterns (they load asynchronously)
+    // without overwriting anything the user is currently typing.
+    ref.listen(backupServiceProvider, (previous, next) {
+      final synced = next.ignorePatterns.join(', ');
+      if (!_ignoreEdited && _ignorePatterns.text != synced) {
+        _ignorePatterns.text = synced;
+      }
+    });
     return _SettingsSection(
       title: 'Auto Backup',
       children: [
@@ -441,6 +484,7 @@ class _BackupSection extends ConsumerWidget {
                 maxLines: 1, overflow: TextOverflow.ellipsis),
             trailing: IconButton(
               icon: const Icon(Icons.remove_circle_outline_rounded),
+              tooltip: 'Remove backup folder',
               onPressed: () => ref
                   .read(backupServiceProvider)
                   .removeSource(src),
@@ -463,16 +507,17 @@ class _BackupSection extends ConsumerWidget {
           padding:
               const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           child: TextField(
-            controller: TextEditingController(
-                text: backup.ignorePatterns.join(', ')),
+            controller: _ignorePatterns,
+            onChanged: (_) => _ignoreEdited = true,
             decoration: const InputDecoration(
               labelText: 'Ignore patterns (comma-separated, * = wildcard)',
               hintText: '*.tmp, Screenshots, thumb',
               prefixIcon: Icon(Icons.block_rounded),
             ),
-            onSubmitted: (v) => ref
-                .read(backupServiceProvider)
-                .setIgnorePatterns(v),
+            onSubmitted: (v) {
+              _ignoreEdited = false;
+              ref.read(backupServiceProvider).setIgnorePatterns(v);
+            },
           ),
         ),
         ListTile(

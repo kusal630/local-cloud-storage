@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../../core/errors/app_exceptions.dart';
@@ -9,6 +10,7 @@ import '../../core/haptics/haptic_feedback.dart';
 import '../../core/utils/disk_space_compat.dart';
 import '../../widgets/common.dart';
 import '../../widgets/pool_capacity_card.dart';
+import '../../widgets/pool_donut.dart';
 import 'contribute_sheet.dart';
 import 'pool_contributor_tile.dart';
 import 'pool_health_banner.dart';
@@ -73,6 +75,12 @@ class _PoolScreenState extends State<PoolScreen> {
   bool _loading = false;
   String? _error;
 
+  /// When the snapshot behind the numbers landed, and the freshness line
+  /// rendered from it (UX_BENCHMARK §9).
+  DateTime? _updatedAt;
+  String? _freshnessLine;
+  Timer? _freshnessTimer;
+
   Timer? _joinTimer;
   bool _joinTimedOut = false;
 
@@ -80,6 +88,12 @@ class _PoolScreenState extends State<PoolScreen> {
   // rebuild. State *speech* belongs to PoolHealthBanner, which announces the
   // health word and the exact sentence together.
   bool _wasFull = false;
+
+  /// Membership and quota as of the last successful snapshot. Diffing it
+  /// against the next one is what earns a join/leave/quota announcement — a
+  /// rebuild, or a heartbeat that carries no transition, stays silent.
+  Map<String, PoolContributor>? _knownContributors;
+  int? _knownTotalQuota;
 
   bool _reduce = false;
   final _contributorsKey = GlobalKey();
@@ -91,6 +105,17 @@ class _PoolScreenState extends State<PoolScreen> {
   void initState() {
     super.initState();
     _load();
+    // The freshness line has to keep telling the truth while the screen sits
+    // still, so it re-reads `formatRelative` on a slow tick and repaints only
+    // when the words would actually change (a tick that changes nothing is
+    // not worth a frame).
+    _freshnessTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      final at = _updatedAt;
+      if (at == null || !mounted) return;
+      final next = 'Updated ${formatRelative(at)}';
+      if (next == _freshnessLine) return;
+      setState(() => _freshnessLine = next);
+    });
   }
 
   @override
@@ -101,6 +126,7 @@ class _PoolScreenState extends State<PoolScreen> {
 
   @override
   void dispose() {
+    _freshnessTimer?.cancel();
     _joinTimer?.cancel();
     super.dispose();
   }
@@ -116,12 +142,18 @@ class _PoolScreenState extends State<PoolScreen> {
       setState(() {
         _status = status;
         _loading = false;
+        _updatedAt = DateTime.now();
+        _freshnessLine = 'Updated ${formatRelative(_updatedAt!)}';
       });
       _afterLoad(status);
     } catch (e) {
       if (!mounted) return;
+      AppHaptics.error();
+      // §10: never a raw exception. First paint gets a fix-and-retry
+      // sentence; a refresh that failed keeps the last snapshot on screen
+      // and says so inline instead of silently presenting it as current.
       setState(() {
-        _error = e.toString();
+        _error = _messageFor(e);
         _loading = false;
       });
     }
@@ -131,9 +163,80 @@ class _PoolScreenState extends State<PoolScreen> {
     _syncJoinTimer(s);
 
     // §7C: AppHaptics.error() once per state entry, never per rebuild.
-    if (s.isFull && !_wasFull) AppHaptics.error();
+    final becameFull = s.isFull && !_wasFull;
+    if (becameFull) AppHaptics.error();
     _wasFull = s.isFull;
 
+    // One announcement per snapshot, ordered by what changes the user's
+    // options: a full pool first, then membership, then the quota itself.
+    if (becameFull) {
+      _announce(
+        'The pool is full. Free space, or raise a quota, before uploads '
+        'resume.',
+      );
+    } else {
+      _syncMembership(s);
+    }
+  }
+
+  /// Diffs this snapshot against the previous one and speaks the transition:
+  /// joined, removed, or quota changed. The first paint speaks nothing —
+  /// there was no earlier state to have changed from.
+  void _syncMembership(PoolStatus s) {
+    final before = _knownContributors;
+    final quotaBefore = _knownTotalQuota;
+    final current = {for (final c in s.contributors) c.id: c};
+    _knownContributors = current;
+    _knownTotalQuota = s.totalQuota;
+    if (before == null) return;
+
+    String? message;
+    var celebrate = false;
+    for (final c in s.contributors) {
+      final was = before[c.id];
+      // A join lands as a member that was not there before, or as a
+      // placeholder arc that finished pairing. A placeholder appearing, or a
+      // join that failed, is neither.
+      final landed = !c.isJoining && c.status != PoolContributorStatus.failed;
+      if (was == null) {
+        if (!landed) continue;
+        message = '${c.name} joined the pool';
+        celebrate = true;
+        break;
+      }
+      if (was.isJoining && landed) {
+        message = '${c.name} joined the pool';
+        celebrate = true;
+        break;
+      }
+    }
+    if (message == null) {
+      for (final id in before.keys) {
+        if (current.containsKey(id)) continue;
+        message = '${before[id]!.name} was removed from the pool';
+        break;
+      }
+    }
+    if (message == null && quotaBefore != null && quotaBefore != s.totalQuota) {
+      message = 'Pool quota changed to ${spellPoolSize(s.totalQuota)}';
+    }
+
+    // §8/§9: one success pattern per join, even under reduced motion where
+    // the ring's celebration spark never runs.
+    if (celebrate) AppHaptics.success();
+    if (message != null) _announce(message);
+  }
+
+  /// Screen-reader speech for transitions only — `sendAnnouncement`, never
+  /// the deprecated `SemanticsService.announce` (§10; the same call
+  /// PoolHealthBanner makes).
+  void _announce(String message) {
+    if (!mounted) return;
+    SemanticsService.sendAnnouncement(
+      View.of(context),
+      message,
+      TextDirection.ltr,
+    );
   }
 
   /// The pool's one headline word.
@@ -228,10 +331,14 @@ class _PoolScreenState extends State<PoolScreen> {
         children: [
           if (s.isFull) _quotaExceededCard(s),
           if (_showBanner) _healthBanner(s),
-          PoolCapacityCard(
-            status: s,
-            onContribute: _openContributeSheet,
+          PoolHeroScope(
+            onShowDetails: _showHeroDetails,
+            child: PoolCapacityCard(
+              status: s,
+              onContribute: _openContributeSheet,
+            ),
           ),
+          _freshnessRow(),
           if (!s.isEmpty) ...[
             const SizedBox(height: 16),
             PoolContributorsCard(
@@ -249,6 +356,64 @@ class _PoolScreenState extends State<PoolScreen> {
             ),
           ],
           const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // §7C — freshness (UX_BENCHMARK §9): when this snapshot landed, and — when
+  // a refresh failed — an honest note that the screen is showing the last
+  // numbers it managed to read. The exception itself never reaches the UI.
+  // -------------------------------------------------------------------------
+  Widget _freshnessRow() {
+    final updatedAt = _updatedAt;
+    if (updatedAt == null) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    final style = Theme.of(context).textTheme.bodySmall;
+    final refreshFailed = _error != null;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.schedule_rounded,
+                size: 14,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                _freshnessLine ?? 'Updated ${formatRelative(updatedAt)}',
+                style: style?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+          if (refreshFailed) ...[
+            const SizedBox(height: 4),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Icon(
+                    Icons.sync_problem_rounded,
+                    size: 14,
+                    color: scheme.error,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    "Couldn't refresh — showing the last known numbers.",
+                    style: style?.copyWith(color: scheme.error),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -334,9 +499,16 @@ class _PoolScreenState extends State<PoolScreen> {
     try {
       await action();
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(_messageFor(e))));
+      if (mounted) {
+        AppHaptics.error();
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(_messageFor(e))));
+      }
+      // Reconcile first, then hand the failure on: the caller has to learn
+      // that the write never landed, or it will announce a success the pool
+      // never accepted.
+      if (mounted) await _load();
+      rethrow;
     }
     if (mounted) await _load();
   }
@@ -409,6 +581,177 @@ class _PoolScreenState extends State<PoolScreen> {
     );
   }
 
+  // -------------------------------------------------------------------------
+  // §5 — the hero number, explained (UX_BENCHMARK §5): the breakdown sheet a
+  // tap on the hero number opens. It lists every component of the total this
+  // snapshot can actually answer; trash and replica overhead are not reported
+  // by the pool state, so those rows are left out rather than guessed.
+  // -------------------------------------------------------------------------
+
+  /// `PoolDonut` looks this up through [PoolHeroScope], so the number and its
+  /// explanation always come from the same snapshot (DESIGN §6: radius 24).
+  void _showHeroDetails() {
+    final s = _status;
+    if (s == null) return;
+    AppHaptics.light();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      // Spelled out (rather than relying on `bottomSheetTheme`) so the sheet
+      // keeps the DESIGN.md §6 radius 24 geometry wherever it is shown.
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        final text = Theme.of(sheetContext).textTheme;
+        final scheme = Theme.of(sheetContext).colorScheme;
+        final offlineSubtracted = s.hasOffline && !s.allOffline;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.8,
+            ),
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Where this number comes from',
+                      style: text.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      s.isEmpty
+                          ? 'No devices are contributing yet, so the pool has '
+                              'no quota to break down.'
+                          : "Each device's share of its free space, added "
+                              "together — that is the pool's quota.",
+                      style: text.bodyMedium
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                    const SizedBox(height: 16),
+                    for (final c in s.contributors)
+                      _detailRow(
+                        sheetContext,
+                        _contributorLabel(c),
+                        c.quotaBytes,
+                      ),
+                    if (s.contributors.isNotEmpty) ...[
+                      const Divider(height: 24),
+                      _detailRow(
+                        sheetContext,
+                        'Pool quota',
+                        s.totalQuota,
+                        emphasised: true,
+                      ),
+                      if (offlineSubtracted) ...[
+                        _detailRow(
+                          sheetContext,
+                          'Offline right now',
+                          s.offlineQuota,
+                          note: 'Subtracted from the number while those '
+                              'devices are unreachable.',
+                        ),
+                        _detailRow(
+                          sheetContext,
+                          'Available now',
+                          s.availableQuota,
+                          emphasised: true,
+                        ),
+                      ],
+                      if (s.reservedBytes > 0)
+                        _detailRow(
+                          sheetContext,
+                          'Reserved for uploads',
+                          s.reservedBytes,
+                          note: 'Claimed by an upload that has not finished '
+                              'yet. It becomes used when the write commits, '
+                              'or free again if it fails.',
+                        ),
+                    ],
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        child: const Text('Close'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Legend-style row label: the device name, plus the state word whenever it
+  /// explains why that share is not in play — never a hue on its own (§10).
+  static String _contributorLabel(PoolContributor c) => switch (c.status) {
+        PoolContributorStatus.online => c.name,
+        PoolContributorStatus.offline => '${c.name} (offline)',
+        PoolContributorStatus.joining => '${c.name} (joining)',
+        PoolContributorStatus.failed => '${c.name} (join failed)',
+      };
+
+  /// One "what — how much" row: label left, `formatBytes` figure right, and
+  /// an optional plain-language note underneath. The spoken figure spells its
+  /// unit out (§10) while the visible copy stays `30.0 GB`.
+  Widget _detailRow(
+    BuildContext sheetContext,
+    String label,
+    int bytes, {
+    bool emphasised = false,
+    String? note,
+  }) {
+    final text = Theme.of(sheetContext).textTheme;
+    final scheme = Theme.of(sheetContext).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: text.bodyMedium?.copyWith(
+                    fontWeight: emphasised ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                formatBytes(bytes),
+                semanticsLabel: spellPoolSize(bytes),
+                style: poolMonoDigits.copyWith(
+                  fontSize: 14,
+                  fontWeight: emphasised ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          if (note != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              note,
+              style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 
   // First paint — same shimmer skeleton language as SkeletonList.
   // -------------------------------------------------------------------------

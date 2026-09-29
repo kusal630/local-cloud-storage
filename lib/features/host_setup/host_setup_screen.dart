@@ -228,6 +228,8 @@ class _HostSetupScreenState extends ConsumerState<HostSetupScreen> {
                       icon: Icon(_obscure
                           ? Icons.visibility_rounded
                           : Icons.visibility_off_rounded),
+                      tooltip:
+                          _obscure ? 'Show password' : 'Hide password',
                       onPressed: () => setState(() => _obscure = !_obscure),
                     ),
                   ),
@@ -276,7 +278,7 @@ class _HostSetupScreenState extends ConsumerState<HostSetupScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.rocket_launch_rounded),
                   label: Text(
-                      state.loading ? 'Starting…' : 'Start Storage Node'),
+                      state.loading ? 'Starting…' : 'Start hosting'),
                 ),
                 const SizedBox(height: 12),
                 Text(

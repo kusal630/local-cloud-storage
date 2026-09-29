@@ -67,6 +67,7 @@ class _SmartSearchBarState extends State<SmartSearchBar> {
               if (_controller.text.isNotEmpty)
                 IconButton(
                   icon: const Icon(Icons.clear_rounded, size: 20),
+                  tooltip: 'Clear search',
                   onPressed: () {
                     _controller.clear();
                     widget.onChanged?.call('');

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:localvault/app/providers.dart';
+import 'package:localvault/core/haptics/haptic_feedback.dart';
 import 'package:localvault/data/models/vault_file.dart';
 import 'package:localvault/widgets/common.dart';
 
@@ -41,15 +42,29 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
     try {
       final svc = ref.read(fileServiceProvider);
       final items = await svc.listTrash();
+      if (!mounted) return;
       setState(() {
         _items = items;
         _loading = false;
       });
-    } catch (e) {
+    } catch (_) {
+      if (!mounted) return;
       setState(() {
-        _error = e.toString();
         _loading = false;
+        // An exception string is not UI copy — it leaks internals the user
+        // cannot act on. Only blank the screen when there is nothing to keep.
+        if (_items.isEmpty) {
+          _error = "Couldn't load your trash. Tap Retry to try again.";
+        }
       });
+      if (_items.isNotEmpty) {
+        // The list is already on screen: keep it (a spinner would throw away
+        // the user's scroll position after every restore) and say so quietly.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Could not refresh. Pull down to try again.')),
+        );
+      }
     }
   }
 
@@ -57,11 +72,54 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
     try {
       await ref.read(fileServiceProvider).restoreFile(file.id);
       _load();
-    } catch (e) {
+      // Restore succeeded *silently* until now: the list just changed under
+      // the user with no confirmation that it worked (the failure path always
+      // said something — only success was mute).
+      // The confirmation doubles as the undo affordance (UX_BENCHMARK #10):
+      // the row vanishes from the list, so the way back has to be on screen
+      // at the moment it happens.
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Restore failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("'${file.name}' is back in your files."),
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () => _unrestore(file),
+            ),
+          ),
+        );
       }
+      AppHaptics.success();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Could not restore that file. Pull down to try again.')));
+      }
+      AppHaptics.error();
+    }
+  }
+
+  /// Undo of a restore — straight back into the trash, which is exactly what
+  /// the files screen's "moved to Trash" snackbar reverses. Undo failures are
+  /// said out loud rather than swallowed (never fail quietly).
+  Future<void> _unrestore(VaultFile file) async {
+    try {
+      await ref.read(fileServiceProvider).deleteFile(file.id);
+      _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("'${file.name}' moved back to trash.")),
+        );
+      }
+      AppHaptics.success();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Could not undo that. Pull down to try again.')));
+      }
+      AppHaptics.error();
     }
   }
 
@@ -69,9 +127,10 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Permanent Delete?'),
+        // §10: sentence case, and the irreversibility stated plainly.
+        title: const Text('Delete permanently?'),
         content: Text(
-            '"${file.name}" will be permanently deleted. This cannot be undone.'),
+            '${file.name} will be deleted from this device. This cannot be undone.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -83,14 +142,24 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
       ),
     );
     if (confirmed != true) return;
+    // §9: heavy feedback fires on the gesture — this is the point of no
+    // return, and it fires before the round-trip rather than after it.
+    AppHaptics.heavy();
     try {
       await ref.read(fileServiceProvider).permanentDelete(file.id);
       _load();
-    } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("'${file.name}' was deleted.")),
+        );
       }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Could not delete that file. Pull down to try again.')));
+      }
+      AppHaptics.error();
     }
   }
 
@@ -98,28 +167,35 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Empty Trash?'),
-        content:
-            const Text('All items will be permanently deleted. This cannot be undone.'),
+        title: const Text('Empty trash?'),
+        content: const Text(
+            'Everything in the trash will be deleted from this device. This cannot be undone.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Cancel')),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Empty')),
+              child: const Text('Empty trash')),
         ],
       ),
     );
     if (confirmed != true) return;
+    AppHaptics.heavy();
     try {
       await ref.read(fileServiceProvider).emptyTrash();
       _load();
-    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Empty trash failed: $e')));
+            .showSnackBar(const SnackBar(content: Text('Trash emptied.')));
       }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Could not empty the trash. Pull down to try again.')));
+      }
+      AppHaptics.error();
     }
   }
 
@@ -132,12 +208,12 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
           if (_items.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_sweep),
-              tooltip: 'Empty Trash',
+              tooltip: 'Empty trash',
               onPressed: _emptyTrash,
             ),
         ],
       ),
-      body: _loading
+      body: _loading && _items.isEmpty
           ? const LoadingIndicator()
           : _error != null
               ? ErrorState(message: _error!, onRetry: _load)
@@ -145,6 +221,8 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
                   ? const EmptyState(
                       icon: Icons.delete_outline,
                       title: 'Trash is empty',
+                      subtitle:
+                          'Files you delete appear here first, so you can bring them back.',
                     )
                   : RefreshIndicator(
                       onRefresh: _load,
@@ -187,15 +265,23 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
                             ),
                             trailing: PopupMenuButton(
                               tooltip: 'Actions for ${file.name}',
-                              itemBuilder: (_) => [
+                              itemBuilder: (ctx) => [
                                 const PopupMenuItem(
                                   value: 'restore',
                                   child: Text('Restore'),
                                 ),
-                                const PopupMenuItem(
+                                PopupMenuItem(
                                   value: 'permanent',
-                                  child: Text('Delete Permanently',
-                                      style: TextStyle(color: Colors.red)),
+                                  child: Text(
+                                    'Delete permanently',
+                                    // Token, not a `Colors.red` literal, so the
+                                    // destructive affordance tracks the theme
+                                    // (§11: never rely on a fixed hue).
+                                    style: TextStyle(
+                                      color: Theme.of(ctx).colorScheme.error,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
                               ],
                               onSelected: (value) {

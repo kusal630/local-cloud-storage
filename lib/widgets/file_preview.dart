@@ -113,6 +113,7 @@ class _ImageViewerState extends State<ImageViewer>
                     IconButton(
                       icon: const Icon(Icons.arrow_back_rounded,
                           color: Colors.white),
+                      tooltip: 'Back',
                       onPressed: () => Navigator.pop(context),
                     ),
                     const Spacer(),
@@ -120,18 +121,21 @@ class _ImageViewerState extends State<ImageViewer>
                       IconButton(
                         icon: const Icon(Icons.share_rounded,
                             color: Colors.white),
+                        tooltip: 'Share',
                         onPressed: widget.onShare,
                       ),
                     if (widget.onDownload != null)
                       IconButton(
                         icon: const Icon(Icons.download_rounded,
                             color: Colors.white),
+                        tooltip: 'Download',
                         onPressed: widget.onDownload,
                       ),
                     if (widget.onInfo != null)
                       IconButton(
                         icon: const Icon(Icons.info_outline_rounded,
                             color: Colors.white),
+                        tooltip: 'File info',
                         onPressed: widget.onInfo,
                       ),
                   ],
@@ -245,6 +249,7 @@ class VideoControls extends StatelessWidget {
                   color: Colors.white,
                   size: 36,
                 ),
+                tooltip: isPlaying ? 'Pause' : 'Play',
                 onPressed: onPlayPause,
               ),
               const Spacer(),
@@ -260,6 +265,7 @@ class VideoControls extends StatelessWidget {
                 IconButton(
                   icon: const Icon(Icons.fullscreen_rounded,
                       color: Colors.white),
+                  tooltip: 'Full screen',
                   onPressed: onFullscreen,
                 ),
               ],

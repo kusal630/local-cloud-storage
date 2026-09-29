@@ -22,6 +22,10 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
   @override
   void initState() {
     super.initState();
+    // Rebuilds the synchronous cards (devices, activity, security score,
+    // status pills) every 10s so they track the host. The async cards cache
+    // their futures, so a tick never restarts a fetch or blanks a card that
+    // already rendered.
     _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (mounted) setState(() {});
     });
@@ -39,7 +43,11 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
     if (data == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('Host Dashboard')),
-        body: const ErrorState(message: 'No host is running.'),
+        body: ErrorState(
+          message: 'No host is running on this device yet.',
+          secondaryLabel: 'Start hosting',
+          onSecondary: () => context.go('/host/setup'),
+        ),
       );
     }
     final server = data.server;
@@ -91,14 +99,14 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                           StatusPill(
                             label: server.isRunning ? 'RUNNING' : 'STOPPED',
                             color: server.isRunning
-                                ? const Color(0xFF43A047)
+                                ? Theme.of(context).colorScheme.primary
                                 : Theme.of(context).colorScheme.error,
                           ),
                           const SizedBox(width: 8),
                           StatusPill(
                             label:
                                 '${(server.scheme as String?) ?? 'https'} :${server.port}',
-                            color: const Color(0xFF0E7C7B),
+                            color: Theme.of(context).colorScheme.secondary,
                           ),
                         ],
                       ),
@@ -182,7 +190,7 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
                         title: 'SECURITY',
                         action: StatusPill(
                           label: _securityScore(vault, server),
-                          color: const Color(0xFF43A047),
+                          color: Theme.of(context).colorScheme.primary,
                         ),
                       ),
                       _SecurityList(vault: vault, server: server),
@@ -224,16 +232,64 @@ class _HostDashboardScreenState extends ConsumerState<HostDashboardScreen> {
       ];
 }
 
-class _ServerUrls extends StatelessWidget {
+/// The device's reachable addresses.
+///
+/// The future is created once in [initState], never in [build]. The dashboard
+/// runs a `Timer.periodic` 10s `setState`, and because this card is a child
+/// of that state, building a fresh future on every rebuild restarted the
+/// fetch and dropped an already-rendered card back to `LoadingIndicator`
+/// while the host sat idle.
+class _ServerUrls extends StatefulWidget {
   final dynamic server;
   const _ServerUrls({required this.server});
   @override
+  State<_ServerUrls> createState() => _ServerUrlsState();
+}
+
+class _ServerUrlsState extends State<_ServerUrls> {
+  Future<List<String>>? _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _fetch();
+  }
+
+  @override
+  void didUpdateWidget(_ServerUrls old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.server, widget.server)) _future = _fetch();
+  }
+
+  Future<List<String>> _fetch() =>
+      widget.server.urls() as Future<List<String>>;
+
+  void _retry() {
+    // Block body, deliberately: `setState(() => _future = _fetch())` returns
+    // the Future from its arrow expression and Flutter rejects it outright.
+    setState(() {
+      _future = _fetch();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<List<String>>(
-      future: server.urls() as Future<List<String>>,
+      future: _future,
       builder: (context, snapshot) {
-        if (!snapshot.hasData) return const LoadingIndicator();
-        final urls = snapshot.data!;
+        if (snapshot.hasError) {
+          // This card previously had no error branch at all: a throwing
+          // future became a permanent spinner with no way out.
+          return ErrorState(
+            message: "Couldn't load this device's addresses. "
+                'Tap Retry to try again.',
+            onRetry: _retry,
+          );
+        }
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const LoadingIndicator();
+        }
+        final urls = snapshot.data ?? const <String>[];
         return Column(
           children: urls
               .map((url) => ListTile(
@@ -242,6 +298,7 @@ class _ServerUrls extends StatelessWidget {
                     title: SelectableText(url),
                     trailing: IconButton(
                       icon: const Icon(Icons.copy, size: 18),
+                      tooltip: 'Copy address',
                       onPressed: () {
                         Clipboard.setData(ClipboardData(text: url));
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -372,6 +429,7 @@ class _PairingSectionState extends State<_PairingSection> {
             ),
             trailing: IconButton(
               icon: const Icon(Icons.copy_rounded, size: 18),
+              tooltip: 'Copy fingerprint',
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: _fingerprint!));
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -434,8 +492,7 @@ class _DevicesListState extends ConsumerState<_DevicesList> {
                     children: [
                       if (d.isCurrent)
                         const StatusPill(
-                            label: 'HOST', color: Color(0xFF0E7C7B))
-                      else
+                            label: 'HOST', color: Color(0xFF0E7C7B))                      else
                         IconButton(
                           icon: const Icon(Icons.block_rounded, size: 20),
                           tooltip: 'Revoke',
@@ -461,15 +518,48 @@ class _StorageInfo extends ConsumerStatefulWidget {
 }
 
 class _StorageInfoState extends ConsumerState<_StorageInfo> {
+  /// Cached for the same reason as [_ServerUrls]: the dashboard's 10s tick
+  /// has to *refresh* these numbers, not re-request them from scratch.
+  Future<dynamic>? _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _fetch();
+  }
+
+  @override
+  void didUpdateWidget(_StorageInfo old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.vault, widget.vault)) _future = _fetch();
+  }
+
+  Future<dynamic> _fetch() => widget.vault.storageStatus() as Future<dynamic>;
+
+  void _retry() {
+    setState(() {
+      _future = _fetch();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder(
-      future: widget.vault.storageStatus(),
+      future: _future,
       builder: (context, AsyncSnapshot snapshot) {
         if (snapshot.hasError) {
-          return Text('Error: ${snapshot.error}');
+          // Previously `Text('Error: ${snapshot.error}')` — a raw exception
+          // string rendered as UI copy, with no retry and no next step.
+          return ErrorState(
+            message: "Couldn't read this device's storage. "
+                'Tap Retry to try again.',
+            onRetry: _retry,
+          );
         }
-        if (!snapshot.hasData) return const LoadingIndicator();
+        if (snapshot.connectionState != ConnectionState.done ||
+            snapshot.data == null) {
+          return const LoadingIndicator();
+        }
         final status = snapshot.data;
         final total = (status.total as int);
         final free = (status.free as int);
@@ -897,8 +987,15 @@ class _SecurityList extends StatelessWidget {
         _row(context, secure, 'Encrypted transport',
             secure ? 'HTTPS with pinned certificate' : 'Plain HTTP — add TLS paths in Host Settings'),
         if (secure && fp != null && fp.isNotEmpty)
-          _row(context, true, 'Certificate fingerprint',
-              '${fp.substring(0, 16)}… (clients verify on connect)'),
+          // Clamped: `substring(0, 16)` threw a RangeError on any fingerprint
+          // shorter than 16 characters and took the whole dashboard build with
+          // it (a self-signed cert is enough to reproduce).
+          _row(
+              context,
+              true,
+              'Certificate fingerprint',
+              '${fp.length > 16 ? '${fp.substring(0, 16)}…' : fp} '
+              '(clients verify on connect)'),
         _row(context, true, 'Login enforced',
             'Username + Argon2id password on every new device'),
         _row(context, true, 'Short-lived tokens',

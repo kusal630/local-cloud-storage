@@ -106,7 +106,11 @@ class _WelcomeBody extends ConsumerWidget {
                               context.push('/host/setup');
                             },
                             icon: const Icon(Icons.dns_rounded),
-                            label: const Text('Start Storage Node'),
+                            // The screens this leads to are called "Host
+                            // Setup" and "Connect to Host" — "Storage Node"
+                            // was a word only the code used (DESIGN §10:
+                            // prefer "host"/"device" over "node").
+                            label: const Text('Host this device'),
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -119,7 +123,7 @@ class _WelcomeBody extends ConsumerWidget {
                               context.push('/client/connect');
                             },
                             icon: const Icon(Icons.phone_android_rounded),
-                            label: const Text('Connect to Storage Node'),
+                            label: const Text('Connect to a host'),
                           ),
                         ),
                       ],
@@ -143,7 +147,10 @@ class _WelcomeBody extends ConsumerWidget {
                 _FeatureRow(
                   icon: Icons.lock_rounded,
                   title: 'You hold the keys',
-                  subtitle: 'Argon2id + short-lived tokens on your network',
+                  // Plain language for what the code actually does: no
+                  // account, password hashed with Argon2id, nothing reaching
+                  // the internet. Naming the algorithm told the user nothing.
+                  subtitle: 'No account. Everything stays on your network.',
                 ),
                 const SizedBox(height: 20),
                 Container(
@@ -153,7 +160,9 @@ class _WelcomeBody extends ConsumerWidget {
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
-                    'HOST on this phone or desktop shares storage on :8484 and keeps running in the background. CLIENT on any device browses, uploads and backs up over any route to it.',
+                    'The host runs on this phone or desktop and keeps sharing '
+                    'storage in the background. Every other device connects as '
+                    'a client to browse, upload and back up.',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.onSurfaceVariant,

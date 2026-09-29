@@ -279,16 +279,15 @@ class _ContributeSheetState extends State<ContributeSheet> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Its ${formatPoolSize(quota)} leaves the pool; stored chunks '
-                're-replicate to your other devices first.',
+                'Its ${formatPoolSize(quota)} leaves the pool, and your '
+                'files stay where they are.',
                 style: Theme.of(ctx).textTheme.bodyMedium,
               ),
               const SizedBox(height: 8),
               Text(
                 'The pool drops to '
                 '${formatPoolSize(remaining < 0 ? 0 : remaining)} and uploads '
-                'keep working while chunks are copied across. Nothing is '
-                'deleted.',
+                'keep working on the devices that stay. Nothing is deleted.',
                 style: Theme.of(ctx).textTheme.bodySmall
                     ?.copyWith(color: Theme.of(ctx).colorScheme.outline),
               ),
@@ -343,8 +342,7 @@ class _ContributeSheetState extends State<ContributeSheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'This device left the pool · its chunks are '
-            're-replicating to the others',
+            'This device left the pool · its reserved space was released',
           ),
         ),
       );
@@ -674,15 +672,15 @@ class _ContributeSheetState extends State<ContributeSheet> {
         _InfoRow(
           icon: Icons.lock_outline,
           text:
-              'Files are split into AES-256-GCM encrypted chunks before '
-              'they leave this device.',
+              'Files you upload stay on the host you upload to — no file '
+              'data is sent to any device in this pool.',
         ),
         const SizedBox(height: 12),
         _InfoRow(
           icon: Icons.visibility_off_outlined,
           text:
-              'This device sees opaque chunk ids only — never file names '
-              'or contents.',
+              'This device holds reserved space and a quota count only — '
+              'never file names or contents.',
         ),
         const SizedBox(height: 12),
         _InfoRow(
@@ -705,8 +703,8 @@ class _ContributeSheetState extends State<ContributeSheet> {
         const Divider(),
         const SizedBox(height: 16),
         Text(
-          'This device is one of the devices keeping the pool alive — its '
-          'chunks live on other devices too, so leaving loses no files.',
+          'This device only reserves space for the pool. Leaving it takes '
+          'no files with you and deletes nothing.',
           style: Theme.of(context).textTheme.bodySmall
               ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
@@ -822,24 +820,23 @@ class _ContributeSheetState extends State<ContributeSheet> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Each device contributes a capped slice of its free space. '
-                'LocalVault adds those slices into one drive, so a file is '
-                'split into chunks and spread across devices instead of '
-                'filling a single disk.',
+                'Each device contributes a capped slice of its free space, '
+                'and the pool keeps one tally of them all, so the whole '
+                'cloud reads as a single number.',
                 style: Theme.of(ctx).textTheme.bodyMedium,
               ),
               const SizedBox(height: 8),
               Text(
-                'Every chunk is encrypted with AES-256-GCM and verified with '
-                'SHA-256 before it is read back, and the pool keeps a second '
-                'copy while there is room for it.',
+                'Reserved space is not file space: nothing is copied onto '
+                'a contributing device, so the pool holds your share and '
+                'none of your files.',
                 style: Theme.of(ctx).textTheme.bodyMedium,
               ),
               const SizedBox(height: 8),
               Text(
                 'You choose the share and you can stop at any time: the '
-                'chunks this device holds re-replicate onto the others '
-                'first, so nothing is lost.',
+                'space this device reserved returns to it, and your files '
+                'are never moved.',
                 style: Theme.of(ctx).textTheme.bodySmall
                     ?.copyWith(color: Theme.of(ctx).colorScheme.outline),
               ),

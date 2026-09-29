@@ -6,6 +6,62 @@ import 'common.dart';
 import 'glassmorphism.dart';
 import 'pool_donut.dart';
 
+// ---------------------------------------------------------------------------
+// Graded capacity thresholds — RESEARCH/UX_BENCHMARK.md item 2, applied to
+// the pool hero exactly as the storage screen applies them to its donut:
+// 75% warms the number, 85% warms the ring and adds a sentence, 90% keeps
+// the full treatment this card already had.
+// ---------------------------------------------------------------------------
+
+enum _CapacityLevel { ok, watch, warn, full }
+
+_CapacityLevel _levelOf(PoolStatus s) {
+  if (s.isFull) return _CapacityLevel.full;
+  final f = s.usedFraction;
+  if (f >= 0.85) return _CapacityLevel.warn;
+  if (f >= 0.75) return _CapacityLevel.watch;
+  return _CapacityLevel.ok;
+}
+
+/// Words for the warning bands (DESIGN §10: hue never carries the meaning
+/// alone). The `watch` band states the number; only `warn` gets the
+/// warning glyph, so 75% reads as a note and 85% as an alarm.
+class _CapacityNote extends StatelessWidget {
+  const _CapacityNote({required this.level, required this.fraction});
+
+  final _CapacityLevel level;
+  final double fraction;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final tone = dark ? poolStatusDegraded : poolStatusDegradedLight;
+    final isWarn = level == _CapacityLevel.warn;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        children: [
+          if (isWarn) ...[
+            Icon(Icons.warning_amber_rounded, size: 16, color: tone),
+            const SizedBox(width: 6),
+          ],
+          Expanded(
+            child: Text(
+              isWarn
+                  ? 'Almost full — free up space soon.'
+                  : 'The pool is ${(fraction * 100).round()}% full.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: tone,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Hero "one number, many contributors" card (RESEARCH/DESIGN.md §5).
 ///
 /// GlassCard radius 20, top padding 24 (the page anchor). On AMOLED it fills
@@ -77,6 +133,35 @@ class _PoolCapacityCardState extends State<PoolCapacityCard> {
     return parts.join(' · ');
   }
 
+  /// ≥85%: an outline *around* the ring — amber, red once the pool is full.
+  ///
+  /// The segments keep their per-device colours (a pool ring has to stay
+  /// legible as a set of contributors), so the graded signal is a second,
+  /// outer ring rather than a repaint: a shape cue as well as a hue, with
+  /// the sentence under the donut carrying the meaning in words (§10).
+  /// Below 85% nothing is added, so the healthy card is untouched.
+  Widget _gradedRing(
+    Widget child, {
+    required _CapacityLevel level,
+    required Color amber,
+    required Color errorColor,
+  }) {
+    if (level != _CapacityLevel.warn && level != _CapacityLevel.full) {
+      return child;
+    }
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: level == _CapacityLevel.warn ? amber : errorColor,
+          width: 2,
+        ),
+      ),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -86,6 +171,18 @@ class _PoolCapacityCardState extends State<PoolCapacityCard> {
     final health = _health(s);
     final errorColor =
         brightness == Brightness.dark ? poolStatusError : poolStatusErrorLight;
+    final amber = brightness == Brightness.dark
+        ? poolStatusDegraded
+        : poolStatusDegradedLight;
+    // Graded thresholds (item 2): the centre number warms at 75%, the ring
+    // and a sentence join at 85%, and `isFull` keeps the red centre + halo
+    // this card has always had.
+    final level = _levelOf(s);
+    final centerColor = switch (level) {
+      _CapacityLevel.full => errorColor,
+      _CapacityLevel.watch || _CapacityLevel.warn => amber,
+      _CapacityLevel.ok => null,
+    };
 
     final segments = <PoolDonutSegment>[
       for (var i = 0; i < s.contributors.length; i++)
@@ -113,17 +210,24 @@ class _PoolCapacityCardState extends State<PoolCapacityCard> {
           ),
           const SizedBox(height: 8),
           Center(
-            child: PoolDonut(
-              segments: segments,
-              centerBytes: _centerBytes(s),
-              centerSubLine: _subLine(s),
-              centerColor: s.isFull ? errorColor : null,
-              totalQuota: s.totalQuota,
-              halo: s.isFull,
-              focusedIndex: _focused,
-              dashed: s.isEmpty,
+            child: _gradedRing(
+              PoolDonut(
+                segments: segments,
+                centerBytes: _centerBytes(s),
+                centerSubLine: _subLine(s),
+                centerColor: centerColor,
+                totalQuota: s.totalQuota,
+                halo: s.isFull,
+                focusedIndex: _focused,
+                dashed: s.isEmpty,
+              ),
+              level: level,
+              amber: amber,
+              errorColor: errorColor,
             ),
           ),
+          if (level == _CapacityLevel.watch || level == _CapacityLevel.warn)
+            _CapacityNote(level: level, fraction: s.usedFraction),
           const SizedBox(height: 20),
           _PoolStats(
             contributors: s.contributorCount,
@@ -143,7 +247,7 @@ class _PoolCapacityCardState extends State<PoolCapacityCard> {
               icon: Icons.cloud_off_rounded,
               title: 'Your cloud has no space yet',
               subtitle:
-                  'Contribute free space from this device and add others to pool it into one drive.',
+                  'Contribute free space from this device, then add others — the pool keeps one tally of every share.',
               action: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -205,16 +309,16 @@ void _showHowPoolingWorks(BuildContext context) {
                     fontWeight: FontWeight.w700, letterSpacing: -0.3)),
             const SizedBox(height: 12),
             Text(
-              'Each device contributes a slice of its free space. The pool adds '
-              'those slices into one drive, so files spread across devices '
-              'instead of filling a single disk.',
+              'Each device contributes a slice of its free space, and the '
+              'pool adds those slices into one tally, so the whole cloud '
+              'reads as a single number.',
               style: Theme.of(ctx).textTheme.bodyMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Every device keeps a quota, so it never stores more than the '
-              'share you allow. Revoking a device re-replicates its chunks '
-              'onto the others.',
+              'Every device keeps a quota, so it never holds more than the '
+              'share you allow. Revoking a device returns its slice to the '
+              'pool at once.',
               style: Theme.of(ctx)
                   .textTheme
                   .bodySmall

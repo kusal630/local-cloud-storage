@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show SemanticsRole;
 import 'package:flutter_animate/flutter_animate.dart';
 
 class LoadingIndicator extends StatelessWidget {
@@ -60,14 +61,52 @@ class EmptyState extends StatelessWidget {
       );
 }
 
-class ErrorState extends StatelessWidget {
-  const ErrorState({super.key, required this.message, this.onRetry});
+/// Centered failure panel: one plain-language message, an optional retry and
+/// secondary action, and an optional collapsed "Technical details" drawer.
+///
+/// The contract (DESIGN §10, UX_BENCHMARK #13): [message] names the cause and
+/// the next step in sentence case and never contains an exception string —
+/// the raw text goes in [details], behind a disclosure, so a support ticket
+/// can carry it without a user ever having to read it.
+class ErrorState extends StatefulWidget {
+  const ErrorState({
+    super.key,
+    required this.message,
+    this.onRetry,
+    this.details,
+    this.secondaryLabel,
+    this.onSecondary,
+  }) : assert(onSecondary == null || secondaryLabel != null);
+
+  /// Friendly primary copy. No exception strings here.
   final String message;
+
+  /// Primary action — almost always "Retry".
   final VoidCallback? onRetry;
+
+  /// Raw technical text (exception, status code, endpoint) for support,
+  /// hidden behind the collapsed disclosure.
+  final String? details;
+
+  /// Label for a second, non-retry action (e.g. "Open help", "Check host").
+  final String? secondaryLabel;
+
+  /// Secondary action handler; renders an [OutlinedButton] when set.
+  final VoidCallback? onSecondary;
+
+  @override
+  State<ErrorState> createState() => _ErrorStateState();
+}
+
+class _ErrorStateState extends State<ErrorState> {
+  /// Collapsed by default — the technical text is opt-in, never the default
+  /// reading (the primary message has to be understood without it).
+  bool _showDetails = false;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -84,16 +123,62 @@ class ErrorState extends StatelessWidget {
                   size: 40, color: colors.onErrorContainer),
             ),
             const SizedBox(height: 16),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium),
-            if (onRetry != null) ...[
+            Text(widget.message,
+                textAlign: TextAlign.center, style: text.bodyMedium),
+            if (widget.onRetry != null || widget.onSecondary != null) ...[
               const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
+              // Wrap, not Row: with large text (or the test font) two buttons
+              // side by side overflow instead of reflowing to a second line.
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: [
+                  if (widget.onRetry != null)
+                    FilledButton.icon(
+                      onPressed: widget.onRetry,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                    ),
+                  if (widget.onSecondary != null)
+                    OutlinedButton(
+                      onPressed: widget.onSecondary,
+                      child: Text(widget.secondaryLabel!),
+                    ),
+                ],
               ),
+            ],
+            if (widget.details != null) ...[
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () => setState(() => _showDetails = !_showDetails),
+                icon: Icon(
+                  _showDetails ? Icons.expand_less : Icons.expand_more,
+                  size: 20,
+                ),
+                label: const Text('Technical details'),
+              ),
+              if (_showDetails)
+                // Theme tokens only (surfaceContainerHighest + outline), so
+                // the drawer reads the same in light, dark and AMOLED — no
+                // fixed greys to be "corrected" later.
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: colors.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: colors.outlineVariant),
+                  ),
+                  child: Text(
+                    widget.details!,
+                    style: text.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontFamily: 'Roboto Mono',
+                      fontFamilyFallback: const <String>['monospace'],
+                    ),
+                  ),
+                ),
             ],
           ],
         ),
@@ -261,55 +346,99 @@ class StorageMeter extends StatelessWidget {
 
 /// Skeleton placeholder rows with a shimmer sweep — reads as alive,
 /// not stuck (perceived-performance research).
+///
+/// The sweep is decoration, so it stops under "remove animations": the rows
+/// stay exactly where they are, they just stop moving (DESIGN §8 collapses
+/// durations to zero without ever changing layout). NN/g flag animated
+/// skeletons as an accessibility problem in their own right, and until now
+/// this was the one loading state in the app that ignored the setting.
 class SkeletonList extends StatelessWidget {
   const SkeletonList({super.key, this.rows = 6});
   final int rows;
   @override
   Widget build(BuildContext context) {
     final c = Theme.of(context).colorScheme.surfaceContainerHighest;
+    final still = MediaQuery.disableAnimationsOf(context);
     return ListView.separated(
       padding: const EdgeInsets.all(16),
       itemCount: rows,
       separatorBuilder: (context, index) => const SizedBox(height: 8),
-      itemBuilder: (context, index) => Container(
-        height: 64,
-        decoration: BoxDecoration(
-            color: c.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(12)),
-      )
-          .animate(onPlay: (c) => c.repeat())
-          .shimmer(duration: 1400.ms, color: c.withValues(alpha: 0.9)),
+      itemBuilder: (context, index) {
+        final row = Container(
+          height: 64,
+          decoration: BoxDecoration(
+              color: c.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(12)),
+        );
+        return still
+            ? row
+            : row
+                .animate(onPlay: (controller) => controller.repeat())
+                .shimmer(duration: 1400.ms, color: c.withValues(alpha: 0.9));
+      },
     );
   }
 }
 
 /// Small status pill (e.g. Running / Paired / LAN-only).
+///
+/// Colour and label cross-fade over 200ms `easeInOut` when the state changes
+/// (DESIGN §8: *"no bounce, no shake"*). The box, the dot and the label colour
+/// all animate so a `DEGRADED → ONLINE` flip reads as one transition rather
+/// than a snap — but the pill's geometry never animates, so nothing reflows.
 class StatusPill extends StatelessWidget {
   const StatusPill({super.key, required this.label, required this.color});
   final String label;
   final Color color;
+
+  static const Duration _fade = Duration(milliseconds: 200);
+  static const Curve _curve = Curves.easeInOut;
+
   @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withValues(alpha: 0.4)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-                width: 8, height: 8,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-            const SizedBox(width: 6),
-            Text(label, style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w700,
-                )),
-          ],
-        ),
-      );
+  Widget build(BuildContext context) {
+    final base = Theme.of(context).textTheme.labelMedium;
+    return AnimatedContainer(
+      duration: _fade,
+      curve: _curve,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: _fade,
+            curve: _curve,
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          AnimatedSwitcher(
+            duration: _fade,
+            switchInCurve: _curve,
+            switchOutCurve: _curve,
+            // Fade only — a slide would read as motion, and §8 asks for a
+            // cross-fade. Stacked layout keeps both labels on the same
+            // baseline so the dot never shifts sideways mid-transition.
+            transitionBuilder: (child, animation) =>
+                FadeTransition(opacity: animation, child: child),
+            child: Text(
+              label,
+              key: ValueKey(label),
+              style: base?.copyWith(
+                color: color,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 String formatBytes(int bytes) {
@@ -385,42 +514,66 @@ class StorageDonut extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final c = color ?? scheme.primary;
     final clamped = fraction.clamp(0.0, 1.0);
-    return SizedBox(
-      width: size,
-      height: size,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          SizedBox(
-            width: size,
-            height: size,
-            child: CircularProgressIndicator(
-              value: clamped,
-              strokeWidth: strokeWidth,
-              color: c,
-              backgroundColor: scheme.surfaceContainerHighest,
-              strokeCap: StrokeCap.round,
+    final pct = (clamped * 100).round();
+    // A custom-painted ring announces as "image", or as nothing at all, so a
+    // screen-reader user never hears the number (WCAG 1.1.1; DESIGN §10).
+    // `status` rather than `progressBar` because this is a reading, not a
+    // control — and because `SemanticsRole.status` must not be a live region,
+    // it is never re-read on every rebuild.
+    return Semantics(
+      label: 'Storage in use',
+      value: <String>[
+        '$pct%',
+        if (usedLabel.isNotEmpty) usedLabel,
+        if (freeLabel != null && freeLabel!.isNotEmpty) freeLabel!,
+      ].join(', '),
+      role: SemanticsRole.status,
+      excludeSemantics: true,
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            SizedBox(
+              width: size,
+              height: size,
+              child: CircularProgressIndicator(
+                value: clamped,
+                strokeWidth: strokeWidth,
+                color: c,
+                backgroundColor: scheme.surfaceContainerHighest,
+                strokeCap: StrokeCap.round,
+              ),
             ),
-          ),
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${(clamped * 100).round()}%',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      color: c,
-                    ),
+            // The donut's box is fixed, the text inside it is not: at 200%
+            // text scale the labels are taller than the ring and would
+            // overflow the centre. `scaleDown` only ever shrinks, so at 100%
+            // it lays the labels out exactly as they are now (RESEARCH/
+            // UX_BENCHMARK.md item 8).
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$pct%',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: c,
+                        ),
+                  ),
+                  Text(
+                    usedLabel,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                  ),
+                ],
               ),
-              Text(
-                usedLabel,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-              ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }

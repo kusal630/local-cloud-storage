@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:localvault/app/providers.dart';
+import 'package:localvault/core/haptics/haptic_feedback.dart';
 import 'package:localvault/data/models/device.dart';
 import 'package:localvault/widgets/common.dart';
 
@@ -33,9 +34,11 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
         _devices = devices;
         _loading = false;
       });
-    } catch (e) {
+    } catch (_) {
       setState(() {
-        _error = e.toString();
+        // Never surface an exception string as UI copy — it leaks HTTP/TLS
+        // internals the user can't act on. The retry is the affordance.
+        _error = "Couldn't load your devices. Tap Retry to try again.";
         _loading = false;
       });
     }
@@ -45,9 +48,12 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Revoke Device?'),
+        // §10 copy deck: sentence case, and the consequence spelled out
+        // rather than a bare "are you sure?".
+        title: const Text('Revoke this device?'),
         content: Text(
-            '"${device.name}" will no longer be able to connect to this host.'),
+            '${device.name} will no longer be able to connect to this host. '
+            'You can pair it again at any time.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -59,13 +65,32 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
       ),
     );
     if (confirmed != true) return;
+    // §9: medium is the destructive confirmation — same pattern the pool's
+    // revoke sheet uses, so "I revoked something" feels identical everywhere.
+    AppHaptics.medium();
     try {
       await ref.read(fileServiceProvider).revokeDevice(device.id);
-      _load();
-    } catch (e) {
+      // Previously the list just reloaded in silence: a destructive action
+      // that succeeds with no confirmation leaves the user guessing whether
+      // the tap registered.
+      AppHaptics.success();
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Revoke failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${device.name} can no longer connect')),
+        );
+      }
+      _load();
+    } catch (_) {
+      // A revoke can fail because the host is unreachable or the device
+      // already disconnected — neither is an HTTP/TLS detail the user can
+      // act on, so say what failed and offer the retry they can take.
+      AppHaptics.error();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not revoke that device. Pull down to try again.'),
+          ),
+        );
       }
     }
   }
@@ -112,7 +137,7 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                                   Text('ID: ${device.id.substring(0, 8)}...'),
                                   Text(
                                     device.lastSeenAt != null
-                                        ? 'Last seen: ${device.lastSeenAt!.toLocal().toString().substring(0, 16)}'
+                                        ? 'Last seen ${formatRelative(device.lastSeenAt!)}'
                                         : 'Just paired',
                                     style: Theme.of(context).textTheme.bodySmall,
                                   ),
@@ -121,9 +146,11 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                               trailing: device.isCurrent
                                   ? null
                                   : IconButton(
-                                      icon: const Icon(Icons.block,
-                                          color: Colors.red),
-                                      tooltip: 'Revoke',
+                                      icon: Icon(Icons.block,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .error),
+                                      tooltip: 'Revoke ${device.name}',
                                       onPressed: () => _revoke(device),
                                     ),
                             ),

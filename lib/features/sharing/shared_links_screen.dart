@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
+import '../../core/haptics/haptic_feedback.dart';
 import '../../data/models/shared_link.dart';
 import '../../widgets/common.dart';
 
@@ -32,9 +33,17 @@ class _SharedLinksScreenState extends ConsumerState<SharedLinksScreen> {
         _links = links;
         _error = null;
       });
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      // `e.toString()` used to be rendered straight into ErrorState, putting a
+      // Dio/SocketException string on screen — a detail nobody can act on.
+      // ErrorState supplies the Retry, so point at that rather than a pull
+      // gesture this branch never renders.
+      AppHaptics.error();
+      setState(() {
+        _error = "Couldn't reach this host to load your shared links. "
+            'Try again once it is back on your network.';
+      });
     }
   }
 
@@ -56,13 +65,25 @@ class _SharedLinksScreenState extends ConsumerState<SharedLinksScreen> {
       ),
     );
     if (confirmed != true) return;
+    AppHaptics.medium(); // §9: medium is the destructive confirmation
     try {
       await ref.read(fileServiceProvider).deleteShare(link.tokenPrefix);
+      AppHaptics.success();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Link for ${link.fileName} revoked')),
+        );
+      }
       _load();
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Revoke failed: $e')));
+      // No raw exception: name what failed and give them the way out.
+      AppHaptics.error();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not revoke that link. Pull down to try again.'),
+        ),
+      );
     }
   }
 

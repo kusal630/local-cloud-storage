@@ -314,7 +314,7 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Text(
-                          'Listening for storage nodes…\nStart a node on the same Wi-Fi and it appears here.'),
+                          'Looking for a host…\nStart LocalVault on the same Wi-Fi and it appears here.'),
                     ),
                   ],
                 ),
@@ -397,6 +397,7 @@ class _ClientConnectScreenState extends ConsumerState<ClientConnectScreen> {
                   icon: Icon(_obscurePass
                       ? Icons.visibility_rounded
                       : Icons.visibility_off_rounded),
+                  tooltip: _obscurePass ? 'Show password' : 'Hide password',
                   onPressed: () =>
                       setState(() => _obscurePass = !_obscurePass),
                 ),

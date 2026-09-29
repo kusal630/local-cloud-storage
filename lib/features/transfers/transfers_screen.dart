@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/transfer_manager.dart';
+import 'package:localvault/core/haptics/haptic_feedback.dart';
 import 'package:localvault/widgets/common.dart';
 
 class TransfersScreen extends ConsumerStatefulWidget {
@@ -11,44 +12,84 @@ class TransfersScreen extends ConsumerStatefulWidget {
 }
 
 class _TransfersScreenState extends ConsumerState<TransfersScreen> {
-  int _celebratedDone = 0;
+  /// Terminal transfers we have already announced, or `null` while the
+  /// restored queue is still loading.
+  ///
+  /// Seeded from what `restore()` brings back so transfers carried over from
+  /// the last session are *not* announced as if they had just finished —
+  /// previously the queue was rehydrated into `build()`'s condition and the
+  /// first frame of a cold start popped "All 3 transfers complete".
+  int? _celebratedDone;
 
   @override
   void initState() {
     super.initState();
-    // Rehydrate tasks persisted before an app restart.
-    Future.microtask(
-        () => ref.read(transferManagerProvider).restore());
+    // Rehydrate tasks persisted before an app restart, then take a baseline
+    // of what was already finished before this screen started watching.
+    Future.microtask(() async {
+      final manager = ref.read(transferManagerProvider);
+      await manager.restore();
+      _celebratedDone = _terminalCount(manager.tasks);
+    });
+  }
+
+  static int _terminalCount(List<TransferTask> tasks) => tasks
+      .where((t) =>
+          t.status == TransferStatus.completed ||
+          t.status == TransferStatus.failed)
+      .length;
+
+  /// Peak–end rule: mark the finish line, not just the progress.
+  ///
+  /// Runs from a listener rather than from `build()`. A listener fires only
+  /// when the queue actually changes, so nothing is mutated or scheduled
+  /// during layout, and the announcement happens exactly once — wherever the
+  /// user happens to be in the app.
+  void _celebrate(List<TransferTask> tasks) {
+    if (_celebratedDone == null) return; // queue not restored yet
+    final busy = tasks.any((t) =>
+        t.status == TransferStatus.running ||
+        t.status == TransferStatus.queued);
+    if (busy) return;
+    final done = _terminalCount(tasks);
+    if (done <= _celebratedDone!) return;
+    _celebratedDone = done;
+
+    final failed =
+        tasks.where((t) => t.status == TransferStatus.failed).length;
+    final failedDone =
+        tasks.where((t) => t.status == TransferStatus.completed).length;
+    // §10: real plurals — "$failed failure(s)" was never acceptable copy.
+    final message = failed == 0
+        ? (failedDone == 1
+            ? 'Transfer complete.'
+            : 'All $failedDone transfers complete.')
+        : failed == 1
+            ? '1 transfer failed.'
+            : '$failed transfers failed.';
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+      // A system event rather than a gesture, so the success/error pattern
+      // (DESIGN §9) is right here: it marks the outcome for the user even
+      // when they are looking at another tab.
+      if (failed > 0) {
+        AppHaptics.error();
+      } else {
+        AppHaptics.success();
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final manager = ref.watch(transferManagerProvider);
+    ref.listen(transferManagerProvider, (_, next) => _celebrate(next.tasks));
     final tasks = manager.tasks;
     final colors = Theme.of(context).colorScheme;
-    final done = tasks
-        .where((t) =>
-            t.status == TransferStatus.completed ||
-            t.status == TransferStatus.failed)
-        .length;
-    final busy = tasks.any((t) =>
-        t.status == TransferStatus.running ||
-        t.status == TransferStatus.queued);
-    // Peak-end rule: mark the finish line, not just the progress.
-    if (tasks.isNotEmpty && !busy && done > _celebratedDone) {
-      _celebratedDone = done;
-      final failed =
-          tasks.where((t) => t.status == TransferStatus.failed).length;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(failed == 0
-                  ? 'All transfers complete.'
-                  : 'Transfers finished with $failed failure(s).')),
-        );
-      });
-    }
 
     return Scaffold(
       appBar: AppBar(
@@ -57,7 +98,7 @@ class _TransfersScreenState extends ConsumerState<TransfersScreen> {
           if (tasks.any((t) => t.status == TransferStatus.completed))
             IconButton(
               icon: const Icon(Icons.delete_sweep),
-              tooltip: 'Clear Completed',
+              tooltip: 'Clear completed',
               onPressed: manager.clearCompleted,
             ),
         ],

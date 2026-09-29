@@ -14,6 +14,16 @@ const _radiusXS = 8.0;
 /// AMOLED black for OLED power savings.
 const _amoledBlack = Color(0xFF000000);
 
+/// AMOLED background behind *scrolling* content.
+///
+/// Immich's community filed a design-rework thread specifically about true
+/// `#000000` smearing while lists scroll: an "off" pixel beside a lit one
+/// lags on the way back to black. Pure black stays where it earns its
+/// battery saving — the static chrome (app bar, hero surfaces) — and the
+/// scaffold that lists actually scroll over sits one step off black.
+/// `surfaceContainerLowest` keeps `#000000` reachable for those surfaces.
+const _amoledScrollSurface = Color(0xFF0A0A0A);
+
 ColorScheme _scheme(Brightness brightness, {bool amoled = false}) {
   if (amoled) {
     return ColorScheme.fromSeed(
@@ -22,10 +32,13 @@ ColorScheme _scheme(Brightness brightness, {bool amoled = false}) {
     ).copyWith(
       surface: _amoledBlack,
       surfaceContainerLowest: _amoledBlack,
-      surfaceContainerLow: const Color(0xFF0A0A0A),
-      surfaceContainer: const Color(0xFF111111),
-      surfaceContainerHigh: const Color(0xFF1A1A1A),
-      surfaceContainerHighest: const Color(0xFF222222),
+      // The ladder is lifted one notch so every step keeps the same ~10-level
+      // separation it has today — cards must not sink into the raised
+      // scaffold. Contrast hierarchy is unchanged; only the floor moved.
+      surfaceContainerLow: const Color(0xFF141414),
+      surfaceContainer: const Color(0xFF1A1A1A),
+      surfaceContainerHigh: const Color(0xFF222222),
+      surfaceContainerHighest: const Color(0xFF2A2A2A),
     );
   }
   return ColorScheme.fromSeed(
@@ -40,7 +53,7 @@ ThemeData _buildTheme(Brightness brightness, {bool amoled = false}) {
   return ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
-    scaffoldBackgroundColor: scheme.surface,
+    scaffoldBackgroundColor: amoled ? _amoledScrollSurface : scheme.surface,
     appBarTheme: AppBarTheme(
       centerTitle: true,
       backgroundColor: scheme.surface,
@@ -125,6 +138,11 @@ ThemeData _buildTheme(Brightness brightness, {bool amoled = false}) {
     ),
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
+        // M3's default TextButton is 40px tall — under the 44px touch floor
+        // (DESIGN §10). Elevated/Filled/Outlined are set to 48 above; text
+        // buttons ("Add device", "Retry", "How pooling works") were left on
+        // the default. 44 keeps them legal without visually inflating them.
+        minimumSize: const Size(64, 44),
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(_radiusS)),
       ),
@@ -165,6 +183,11 @@ ThemeData _buildTheme(Brightness brightness, {bool amoled = false}) {
       space: 1,
     ),
     navigationBarTheme: NavigationBarThemeData(
+      // Density: the M3 default is 80, and every Material 3 Expressive Google
+      // app shortened its bottom bar. 68 still leaves ~12px of slack over the
+      // 56px an icon+label destination needs, so nothing clips — verified by
+      // test/widget/navigation_bar_test.dart.
+      height: 68,
       indicatorColor: scheme.primaryContainer,
       labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
       elevation: 0,

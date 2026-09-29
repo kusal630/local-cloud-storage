@@ -14,6 +14,7 @@ import 'package:pdfx/pdfx.dart';
 import 'package:video_player/video_player.dart';
 import 'package:localvault/app/providers.dart';
 import 'package:localvault/client/services/file_service.dart';
+import 'package:localvault/core/errors/app_exceptions.dart';
 import 'package:localvault/core/utils/docx_text.dart';
 import 'package:localvault/data/models/audit_entry.dart';
 import 'package:localvault/data/models/file_comment.dart';
@@ -33,6 +34,10 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
   VaultFile? _file;
   bool _loading = true;
   String? _error;
+
+  /// Raw text behind [_error], when it says more than the friendly copy —
+  /// shown through [ErrorState]'s collapsed disclosure, never as the message.
+  String? _errorDetails;
 
   @override
   void initState() {
@@ -60,7 +65,13 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        // Named cause plus next step; anything the app cannot translate
+        // goes behind the disclosure rather than being rendered at the
+        // reader as an exception string.
+        _error = e is AppException
+            ? e.message
+            : "Couldn't open this file. Try again, or choose another file.";
+        _errorDetails = e is AppException ? null : e.toString();
         _loading = false;
       });
     }
@@ -77,7 +88,11 @@ class _PreviewScreenState extends ConsumerState<PreviewScreen> {
     if (_error != null || _file == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('Preview')),
-        body: ErrorState(message: _error ?? 'File not found.', onRetry: _load),
+        body: ErrorState(
+          message: _error ?? 'File not found.',
+          details: _errorDetails,
+          onRetry: _load,
+        ),
       );
     }
     final file = _file!;
@@ -245,7 +260,9 @@ class _PreviewImageState extends ConsumerState<_PreviewImage> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return ErrorState(message: 'Could not load image.', onRetry: () {
+      return ErrorState(
+          message: "Couldn't load this image. Tap Retry to try again.",
+          onRetry: () {
         setState(() {
           _error = null;
           _bytes = null;
@@ -611,6 +628,7 @@ class _PreviewMetadata extends ConsumerStatefulWidget {
 
 class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
   List<FileVersion>? _versions;
+  String? _versionsError;
 
   @override
   void initState() {
@@ -624,8 +642,17 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
       final versions =
           await ref.read(fileServiceProvider).listVersions(widget.file.id);
       if (!mounted) return;
-      setState(() => _versions = versions);
-    } catch (_) {}
+      setState(() {
+        _versions = versions;
+        _versionsError = null;
+      });
+    } catch (_) {
+      // Failure must not be indistinguishable from "still loading".
+      if (!mounted) return;
+      setState(() {
+        _versionsError = "Couldn't load version history. Tap Retry to try again.";
+      });
+    }
   }
 
   Future<void> _restoreVersion(FileVersion v) async {    final confirmed = await showDialog<bool>(
@@ -719,7 +746,15 @@ class _PreviewMetadataState extends ConsumerState<_PreviewMetadata> {
         ),
         if (!file.isFolder) ...[
           const SizedBox(height: 16),
-          const SectionHeader(title: 'VERSION HISTORY'),          if (_versions == null)
+          const SectionHeader(title: 'VERSION HISTORY'),          if (_versionsError != null)
+            ErrorState(
+              message: _versionsError!,
+              onRetry: () {
+                setState(() => _versionsError = null);
+                _loadVersions();
+              },
+            )
+          else if (_versions == null)
             const LoadingIndicator()
           else if (_versions!.isEmpty)
             const EmptyState(
@@ -774,6 +809,7 @@ class _CommentsCard extends ConsumerStatefulWidget {
 
 class _CommentsCardState extends ConsumerState<_CommentsCard> {
   List<FileComment>? _comments;
+  String? _error;
   final _controller = TextEditingController();
   bool _sending = false;
 
@@ -795,8 +831,18 @@ class _CommentsCardState extends ConsumerState<_CommentsCard> {
           .read(fileServiceProvider)
           .listComments(widget.file.id);
       if (!mounted) return;
-      setState(() => _comments = comments);
-    } catch (_) {}
+      setState(() {
+        _comments = comments;
+        _error = null;
+      });
+    } catch (_) {
+      // Keep the failure visible — an empty state here would look like a
+      // spinner that never resolves (DESIGN: honest failure states).
+      if (!mounted) return;
+      setState(() {
+        _error = "Couldn't load comments. Tap Retry to try again.";
+      });
+    }
   }
 
   Future<void> _send() async {
@@ -856,7 +902,15 @@ class _CommentsCardState extends ConsumerState<_CommentsCard> {
             SectionHeader(
                 title:
                     'COMMENTS${_comments == null ? '' : ' (${_comments!.length})'}'),
-            if (_comments == null)
+            if (_error != null)
+              ErrorState(
+                message: _error!,
+                onRetry: () {
+                  setState(() => _error = null);
+                  _load();
+                },
+              )
+            else if (_comments == null)
               const LoadingIndicator()
             else if (_comments!.isEmpty)
               Text('No comments yet — start the discussion.',
@@ -872,6 +926,7 @@ class _CommentsCardState extends ConsumerState<_CommentsCard> {
                       '${c.author} • ${formatRelative(c.createdAt)}'),
                   trailing: IconButton(
                     icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                    tooltip: 'Delete comment',
                     onPressed: () => _delete(c),
                   ),
                 ),
@@ -888,12 +943,14 @@ class _CommentsCardState extends ConsumerState<_CommentsCard> {
                 ),
                 const SizedBox(width: 8),
                 IconButton.filled(
+                  tooltip: 'Send comment',
                   icon: _sending
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 16,
                           height: 16,
                           child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white))
+                              strokeWidth: 2,
+                              color: Theme.of(context).colorScheme.onPrimary))
                       : const Icon(Icons.send_rounded),
                   onPressed: _send,
                 ),
@@ -1074,7 +1131,9 @@ class _PreviewTextCardState extends ConsumerState<_PreviewTextCard> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return ErrorState(message: 'Text preview failed.', onRetry: () {
+      return ErrorState(
+          message: "Couldn't open this text preview. Tap Retry to try again.",
+          onRetry: () {
         setState(() => _error = null);
         _load();
       });

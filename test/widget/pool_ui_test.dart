@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show SemanticsRole;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:localvault/features/pool/contribute_sheet.dart';
@@ -6,6 +7,7 @@ import 'package:localvault/features/pool/pool_health_banner.dart';
 import 'package:localvault/features/pool/pool_models.dart';
 import 'package:localvault/features/pool/pool_screen.dart';
 import 'package:localvault/widgets/pool_capacity_card.dart';
+import 'package:localvault/widgets/pool_donut.dart';
 
 const _gib = 1024 * 1024 * 1024;
 
@@ -467,15 +469,15 @@ void main() {
 
       expect(
         find.text(
-          'Files are split into AES-256-GCM encrypted chunks before '
-          'they leave this device.',
+          'Files you upload stay on the host you upload to — no file '
+          'data is sent to any device in this pool.',
         ),
         findsOneWidget,
       );
       expect(
         find.text(
-          'This device sees opaque chunk ids only — never file names '
-          'or contents.',
+          'This device holds reserved space and a quota count only — '
+          'never file names or contents.',
         ),
         findsOneWidget,
       );
@@ -560,15 +562,14 @@ void main() {
       expect(find.text('Stop contributing?'), findsOneWidget);
       expect(
         find.text(
-          'Its 10 GB leaves the pool; stored chunks re-replicate to '
-          'your other devices first.',
+          'Its 10 GB leaves the pool, and your files stay where they are.',
         ),
         findsOneWidget,
       );
       expect(
         find.text(
           'The pool drops to 30 GB and uploads keep working '
-          'while chunks are copied across. Nothing is deleted.',
+          'on the devices that stay. Nothing is deleted.',
         ),
         findsOneWidget,
       );
@@ -681,6 +682,337 @@ void main() {
         expect(tester.takeException(), isNull,
             reason: 'the count-up threw after +${step}ms');
       }
+      await _teardown(tester);
+    });
+  });
+
+  group('PoolScreen — freshness line (UX §9)', () {
+    testWidgets('says when the snapshot behind the numbers landed', (
+      tester,
+    ) async {
+      await _pumpScreen(
+        tester,
+        PoolStatus(
+          totalQuota: 30 * _gib,
+          usedBytes: 12 * _gib,
+          contributors: [
+            _device('a', name: 'Pixel 7', quota: 30 * _gib, used: 12 * _gib),
+          ],
+        ),
+      );
+
+      expect(find.text('Updated just now'), findsOneWidget);
+      await _teardown(tester);
+    });
+
+    testWidgets('a failed refresh keeps the last numbers and says so', (
+      tester,
+    ) async {
+      var fail = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PoolScreen(
+            fetchStatus: () async {
+              if (fail) throw Exception('socket hang up');
+              return PoolStatus(
+                totalQuota: 30 * _gib,
+                usedBytes: 12 * _gib,
+                contributors: [
+                  _device('a', name: 'Pixel 7', quota: 30 * _gib,
+                      used: 12 * _gib),
+                ],
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1200));
+      expect(find.text('Updated just now'), findsOneWidget);
+
+      fail = true;
+      await tester.tap(find.byTooltip('Refresh pool'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // Honest staleness: the old numbers stay, and the screen says so.
+      expect(
+        find.text("Couldn't refresh — showing the last known numbers."),
+        findsOneWidget,
+      );
+      expect(find.text('Updated just now'), findsOneWidget);
+      expect(find.text('30'), findsOneWidget); // hero still shows the snapshot
+      // Never a raw exception (§10).
+      expect(find.textContaining('socket hang up'), findsNothing);
+      expect(find.textContaining('Exception'), findsNothing);
+      await _teardown(tester);
+    });
+  });
+
+  group('PoolScreen — join, leave and quota transitions (§8/§10)', () {
+    /// Captures `SemanticsService.sendAnnouncement` traffic on the
+    /// accessibility channel (same pattern as the health-banner test).
+    void captureAnnouncements(WidgetTester tester, List<String> into) {
+      tester.binding.defaultBinaryMessenger.setMockMessageHandler(
+        SystemChannels.accessibility.name,
+        (ByteData? message) async {
+          final decoded =
+              SystemChannels.accessibility.codec.decodeMessage(message);
+          if (decoded is Map && decoded['type'] == 'announce') {
+            final data = decoded['data'];
+            if (data is Map && data['message'] is String) {
+              into.add(data['message'] as String);
+            }
+          }
+          return null;
+        },
+      );
+    }
+
+    void captureHaptics(WidgetTester tester, List<String> into) {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'HapticFeedback.vibrate') {
+            into.add(call.arguments as String);
+          }
+          return null;
+        },
+      );
+    }
+
+    void releaseChannels(WidgetTester tester) {
+      tester.binding.defaultBinaryMessenger
+          .setMockMessageHandler(SystemChannels.accessibility.name, null);
+      tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null);
+    }
+
+    testWidgets('a landed join is announced once, buzzes, and rebalances the '
+        'ring instead of hard-cutting', (tester) async {
+      final announcements = <String>[];
+      final vibrate = <String>[];
+      captureAnnouncements(tester, announcements);
+      captureHaptics(tester, vibrate);
+
+      var status = PoolStatus(
+        totalQuota: 10 * _gib,
+        usedBytes: 0,
+        contributors: [_device('a', name: 'Pixel 7', quota: 10 * _gib)],
+      );
+      await tester.pumpWidget(
+        MaterialApp(home: PoolScreen(fetchStatus: () async => status)),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1200));
+
+      expect(announcements, isEmpty); // first paint never speaks
+      expect(vibrate, isEmpty);
+
+      status = PoolStatus(
+        totalQuota: 30 * _gib,
+        usedBytes: 0,
+        contributors: [
+          _device('a', name: 'Pixel 7', quota: 10 * _gib),
+          _device('b', name: 'Laptop', quota: 20 * _gib, kind: 'laptop'),
+        ],
+      );
+      await tester.tap(find.byTooltip('Refresh pool'));
+      await tester.pump(); // loader resolves
+      await tester.pump(); // rebuild with the new snapshot
+
+      expect(announcements, hasLength(1));
+      expect(announcements.single, 'Laptop joined the pool');
+      // The join buzzes the success pattern (whatever shape the platform
+      // cue takes — `AppHaptics` owns that choice).
+      expect(vibrate, isNotEmpty, reason: 'a landed join must buzz');
+      expect(
+        vibrate.any((call) => call.contains('success') || call.contains('mediumImpact')),
+        isTrue,
+        reason: 'expected the success cue, got $vibrate',
+      );
+
+      // The ring re-balances from the `joinProgress 0→1` sweep rather than
+      // jumping straight to the new geometry…
+      await tester.pump(const Duration(milliseconds: 300));
+      final painters = tester.widgetList<CustomPaint>(
+        find.byWidgetPredicate(
+          (w) => w is CustomPaint && w.painter is PoolRingPainter,
+        ),
+      );
+      expect(painters, hasLength(1));
+      final sweep = (painters.single.painter! as PoolRingPainter).sweepProgress;
+      expect(sweep, greaterThan(0), reason: 'the sweep restarted from 0');
+      expect(sweep, lessThan(1), reason: 'the sweep is still interpolating');
+
+      // …and then the join spark travels one lap around the ring.
+      await tester.pump(const Duration(milliseconds: 400)); // 700ms in
+      expect(find.byIcon(Icons.auto_awesome), findsOneWidget);
+
+      // The spark's ticker is stamped on the first frame *after* the sweep's
+      // completion is observed, so its 900ms starts there — with pumps this
+      // coarse that origin drifts. Step frame by frame until it laps and
+      // fades, which asserts the same thing the spec means: it must finish.
+      for (var i = 0;
+          i < 40 && find.byIcon(Icons.auto_awesome).evaluate().isNotEmpty;
+          i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(
+        find.byIcon(Icons.auto_awesome),
+        findsNothing,
+        reason: 'the join spark must lap once and fade, not linger on screen',
+      );
+
+      releaseChannels(tester);
+      await _teardown(tester);
+    });
+
+    testWidgets('a removed contributor is announced by name', (tester) async {
+      final announcements = <String>[];
+      captureAnnouncements(tester, announcements);
+
+      var status = PoolStatus(
+        totalQuota: 30 * _gib,
+        usedBytes: 0,
+        contributors: [
+          _device('a', name: 'Pixel 7', quota: 10 * _gib),
+          _device('b', name: 'Laptop', quota: 20 * _gib, kind: 'laptop'),
+        ],
+      );
+      await tester.pumpWidget(
+        MaterialApp(home: PoolScreen(fetchStatus: () async => status)),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1200));
+      expect(announcements, isEmpty);
+
+      status = PoolStatus(
+        totalQuota: 10 * _gib,
+        usedBytes: 0,
+        contributors: [_device('a', name: 'Pixel 7', quota: 10 * _gib)],
+      );
+      await tester.tap(find.byTooltip('Refresh pool'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(announcements, hasLength(1));
+      expect(announcements.single, 'Laptop was removed from the pool');
+
+      releaseChannels(tester);
+      await _teardown(tester);
+    });
+
+    testWidgets('a quota change with unchanged membership is announced', (
+      tester,
+    ) async {
+      final announcements = <String>[];
+      captureAnnouncements(tester, announcements);
+
+      var status = PoolStatus(
+        totalQuota: 30 * _gib,
+        usedBytes: 0,
+        contributors: [_device('a', name: 'Pixel 7', quota: 30 * _gib)],
+      );
+      await tester.pumpWidget(
+        MaterialApp(home: PoolScreen(fetchStatus: () async => status)),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1200));
+      expect(announcements, isEmpty);
+
+      status = PoolStatus(
+        totalQuota: 40 * _gib,
+        usedBytes: 0,
+        contributors: [_device('a', name: 'Pixel 7', quota: 40 * _gib)],
+      );
+      await tester.tap(find.byTooltip('Refresh pool'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(announcements, hasLength(1));
+      expect(announcements.single, 'Pool quota changed to 40 gigabytes');
+
+      releaseChannels(tester);
+      await _teardown(tester);
+    });
+  });
+
+  group('PoolDonut — chart semantics (UX §4)', () {
+    testWidgets('the ring reads as a status, the hero number as a button', (
+      tester,
+    ) async {
+      final handle = tester.ensureSemantics();
+      await _pumpScreen(
+        tester,
+        PoolStatus(
+          totalQuota: 30 * _gib,
+          usedBytes: 12 * _gib,
+          contributors: [
+            _device('a', name: 'Pixel 7', quota: 30 * _gib, used: 12 * _gib),
+          ],
+        ),
+      );
+
+      expect(find.bySemanticsLabel('Pooled capacity'), findsOneWidget);
+      final ring = tester.getSemantics(find.bySemanticsLabel('Pooled capacity'));
+      expect(ring.getSemanticsData().role, SemanticsRole.status);
+      expect(
+        ring.getSemanticsData().value,
+        '12 gigabytes used of 30 gigabytes, 1 contributor',
+      );
+
+      expect(find.bySemanticsLabel('Where this number comes from'), findsOneWidget);
+      handle.dispose();
+      await _teardown(tester);
+    });
+  });
+
+  group('PoolScreen — explainable hero number (UX §5)', () {
+    testWidgets('tapping the hero number opens the breakdown sheet', (
+      tester,
+    ) async {
+      await _pumpScreen(
+        tester,
+        PoolStatus(
+          totalQuota: 30 * _gib,
+          usedBytes: 12 * _gib,
+          reservedBytes: 2 * _gib,
+          contributors: [
+            _device('a', name: 'Pixel 7', quota: 10 * _gib, used: 4 * _gib,
+                thisDevice: true),
+            _device('b', name: 'Laptop', quota: 20 * _gib, kind: 'laptop'),
+          ],
+        ),
+      );
+
+      final hero = find.text('POOLED');
+      await tester.ensureVisible(hero);
+      await tester.pumpAndSettle();
+      await tester.tap(hero);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Where this number comes from'), findsOneWidget);
+      // Per-device shares, each with the existing byte formatter.
+      expect(find.text('10.0 GB'), findsOneWidget);
+      expect(find.text('20.0 GB'), findsOneWidget);
+      expect(find.text('Pool quota'), findsOneWidget);
+      expect(find.text('30.0 GB'), findsOneWidget);
+      expect(find.text('Reserved for uploads'), findsOneWidget);
+      expect(find.text('2.0 GB'), findsOneWidget);
+      // Trash and replica overhead are not in the pool state, so they are
+      // omitted rather than invented.
+      expect(find.textContaining('Trash'), findsNothing);
+      expect(find.textContaining('replica'), findsNothing);
+
+      await tester.tap(find.text('Close'));
+      await tester.pumpAndSettle();
+      expect(find.text('Where this number comes from'), findsNothing);
       await _teardown(tester);
     });
   });

@@ -286,7 +286,7 @@ void main() {
 
       expect(find.text('Your cloud has no space yet'), findsOneWidget);
       expect(find.text(
-              'Contribute free space from this device and add others to pool it into one drive.'),
+              'Contribute free space from this device, then add others — the pool keeps one tally of every share.'),
           findsOneWidget);
       expect(find.text('Contribute this device'), findsOneWidget);
       expect(find.text('How pooling works'), findsOneWidget);
@@ -316,6 +316,11 @@ void main() {
       // Centre number = available capacity (30 - 11), not the total.
       expect(find.text('19'), findsOneWidget);
       expect(find.text('11 GB offline'), findsOneWidget);
+      // The contributor card sits below the fold now that the freshness row
+      // and the taller capacity card sit above it — reach the tile before
+      // asserting on it, or the ListView never builds it.
+      await tester.drag(find.byType(ListView).first, const Offset(0, -800));
+      await tester.pump(const Duration(milliseconds: 500));
       expect(find.text('Offline'), findsOneWidget); // offline tile pill
       await _teardown(tester);
     });
@@ -444,7 +449,7 @@ void main() {
       expect(find.text('Revoke Pixel 7?'), findsOneWidget);
       expect(
         find.text(
-            'Its 10 GB leaves the pool; 3.2 GB of stored chunks re-replicate.'),
+            'Its 10 GB leaves the pool, and your files stay where they are.'),
         findsOneWidget,
       );
       expect(find.text('Cancel'), findsOneWidget);
@@ -460,7 +465,9 @@ void main() {
             body: PoolContributorTile(
               contributor: _device('a', name: 'Pixel 7', quota: 10 * _gib),
               color: const Color(0xFF2DD4BF),
-              onQuotaChanged: (q) => quota = q,
+              onQuotaChanged: (q) async {
+                quota = q;
+              },
             ),
           ),
         ),
@@ -480,6 +487,41 @@ void main() {
       await tester.pumpAndSettle();
       expect(quota, 10 * _gib);
       expect(find.text('Quota set to 10 GB'), findsOneWidget);
+      await _teardown(tester);
+    });
+
+    testWidgets('a quota write the pool rejects is never reported as saved',
+        (tester) async {
+      var attempts = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PoolContributorTile(
+              contributor: _device('a', name: 'Pixel 7', quota: 10 * _gib),
+              color: const Color(0xFF2DD4BF),
+              onQuotaChanged: (q) async {
+                attempts++;
+                throw StateError('the pool refused the write');
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Actions for Pixel 7'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Set quota…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save 10 GB'));
+      await tester.pumpAndSettle();
+
+      expect(attempts, 1, reason: 'the write is actually attempted');
+      expect(
+        find.text('Quota set to 10 GB'),
+        findsNothing,
+        reason: 'success must wait for the pool, never race ahead of it',
+      );
       await _teardown(tester);
     });
   });
@@ -519,6 +561,48 @@ void main() {
         return box.localToGlobal(Offset.zero).dy;
       }).toList();
       expect(positions.first, lessThan(positions.last));
+      await _teardown(tester);
+    });
+
+    testWidgets('folds past six contributors into one expandable row',
+        (tester) async {
+      // Tall viewport: a ListView only mounts the rows that fit on screen.
+      tester.view.physicalSize = const Size(900, 4000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final contributors = [
+        for (var i = 0; i < 8; i++)
+          _device('d$i', name: 'Device $i', quota: (i + 1) * _gib),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: PoolContributorsCard(contributors: contributors),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 800));
+
+      // Sorted by share: the six largest stay, the two smallest fold away
+      // behind a row that still names what is hidden.
+      expect(find.byType(PoolContributorTile), findsNWidgets(6));
+      expect(find.text('2 more devices · 3 GB'), findsOneWidget);
+
+      await tester.tap(find.text('2 more devices · 3 GB'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(find.byType(PoolContributorTile), findsNWidgets(8));
+      expect(
+        find.text('2 more devices · 3 GB'),
+        findsNothing,
+        reason: 'expanded, so no fold remains',
+      );
       await _teardown(tester);
     });
   });
